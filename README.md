@@ -31,6 +31,14 @@ Give your Grok Bot the link to this project and say **"set this up for me"**. Yo
 
 All you do is approve a few cards, paste one pairing code into chat, and copy one webhook URL and key from the Grok Bot app into the beacon's **Wake hook…** window.
 
+### Download (ready-to-run)
+
+Prefer not to build it? Each [release](https://github.com/SnazzyGaz/bot-beacons/releases/latest) has a ready-to-run `BotBeacons-<version>-win.zip` with a prebuilt `BotBeacons.exe`. Check its SHA-256 against the one in the release notes, unzip it anywhere, and in that folder run:
+
+`powershell -NoProfile -ExecutionPolicy Bypass -File install.ps1`
+
+It installs for your user only, with no admin rights, and starts the app, which shows a one-time pairing code. Then give your Grok Bot the link to this project so it can finish the setup from [docs/SETUP.md](docs/SETUP.md). The exe isn't code-signed, so Windows SmartScreen may warn the first time it runs. If you'd rather build it yourself, the source and `build.bat` are right here.
+
 ## Themes
 
 You start with three ready-made characters: a cat, a robot and a glowing white orb. They share one body with different accessories, idle animations and colours. Your bot can design fully custom ones for you, each with its own look, idle animation and alert. See [docs/THEMES.md](docs/THEMES.md).

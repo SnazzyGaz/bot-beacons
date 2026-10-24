@@ -1,0 +1,358 @@
+{
+  "version": 1,
+  "bubble": "card",
+  "anim": {
+    "idleEvery": [
+      20,
+      60
+    ],
+    "twitchEvery": [
+      12,
+      35
+    ],
+    "antenna": [
+      75,
+      27
+    ],
+    "idle": [
+      {
+        "name": "look-around",
+        "dur": 2.2,
+        "steps": [
+          {
+            "tilt": 3,
+            "at": 0,
+            "len": 0.45
+          },
+          {
+            "tilt": -2.5,
+            "at": 0.5,
+            "len": 0.45
+          },
+          {
+            "glint": "eye",
+            "size": 5,
+            "at": 0.3,
+            "len": 0.4
+          }
+        ]
+      }
+    ],
+    "twitches": [
+      {
+        "name": "blink-glow",
+        "dur": 0.5,
+        "steps": [
+          {
+            "glow": "eye",
+            "r": 16,
+            "alpha": 200,
+            "flicker": "true"
+          }
+        ]
+      },
+      {
+        "name": "head-tilt",
+        "dur": 1.2,
+        "steps": [
+          {
+            "tilt": 2.5
+          }
+        ]
+      }
+    ]
+  },
+  "beacons": [
+    {
+      "id": "orb",
+      "name": "Orb",
+      "purpose": "Starter beacon: a little glowing orb",
+      "gist": "All quiet. Click me any time to ping my bot.",
+      "agentId": "",
+      "color": "#8FE3FF",
+      "tint": "#8FE3FF",
+      "base": "beacon-base.png",
+      "overlays": [
+        "orb-aura.png",
+        "orb-crest.png",
+        "orb-sparkles.png"
+      ],
+      "eye": [
+        75,
+        101
+      ],
+      "lamp": [
+        75,
+        141
+      ],
+      "eyeR": 20,
+      "lampR": 6,
+      "anim": {
+        "idle": [
+          {
+            "name": "shimmer",
+            "dur": 2.0,
+            "steps": [
+              {
+                "layer": "orb-aura.png",
+                "alpha": 0.35,
+                "wave": 2
+              },
+              {
+                "layer": "orb-sparkles.png",
+                "rotate": 14,
+                "pivot": [
+                  75,
+                  108
+                ]
+              },
+              {
+                "glint": [
+                  122,
+                  58
+                ],
+                "size": 7,
+                "at": 0.2,
+                "len": 0.5
+              }
+            ]
+          },
+          {
+            "name": "crest-bob",
+            "dur": 1.4,
+            "steps": [
+              {
+                "layer": "orb-crest.png",
+                "dy": -4,
+                "wave": 2
+              },
+              {
+                "hop": 3,
+                "at": 0.1,
+                "len": 0.5
+              }
+            ]
+          }
+        ],
+        "twitches": [
+          {
+            "name": "sparkle",
+            "dur": 0.8,
+            "steps": [
+              {
+                "glint": [
+                  30,
+                  72
+                ],
+                "size": 5
+              }
+            ]
+          }
+        ]
+      },
+      "fallback": true,
+      "eyeGlow": 68,
+      "lampGlow": 16,
+      "glowOver": 24,
+      "glowOverAlpha": 55,
+      "eyeCore": 0
+    },
+    {
+      "id": "robot",
+      "name": "Robo",
+      "purpose": "Starter beacon: a small robot",
+      "gist": "Task finished: your report is ready in chat.",
+      "agentId": "",
+      "color": "#FFB13B",
+      "tint": "#FFB13B",
+      "base": "beacon-base.png",
+      "overlays": [
+        "robot-ears.png",
+        "robot-panel.png",
+        "robot-antenna.png"
+      ],
+      "eye": [
+        75,
+        101
+      ],
+      "lamp": [
+        75,
+        141
+      ],
+      "eyeR": 20,
+      "lampR": 6,
+      "anim": {
+        "idle": [
+          {
+            "name": "antenna-wobble",
+            "dur": 1.3,
+            "steps": [
+              {
+                "layer": "robot-antenna.png",
+                "rotate": 7,
+                "pivot": [
+                  75,
+                  58
+                ],
+                "wave": 3
+              },
+              {
+                "glint": "antenna",
+                "size": 6,
+                "at": 0.1,
+                "len": 0.6
+              }
+            ]
+          },
+          {
+            "name": "beep",
+            "dur": 1.0,
+            "steps": [
+              {
+                "glow": "lamp",
+                "r": 12,
+                "alpha": 220,
+                "flicker": "true"
+              },
+              {
+                "layer": "robot-ears.png",
+                "dy": -2,
+                "wave": 2
+              }
+            ]
+          }
+        ],
+        "twitches": [
+          {
+            "name": "antenna-blip",
+            "dur": 0.6,
+            "steps": [
+              {
+                "glow": "antenna",
+                "r": 10,
+                "alpha": 200
+              }
+            ]
+          }
+        ]
+      },
+      "eyeGlow": 68,
+      "lampGlow": 16,
+      "glowOver": 24,
+      "glowOverAlpha": 55,
+      "eyeCore": 0
+    },
+    {
+      "id": "cat",
+      "name": "Kit",
+      "purpose": "Starter beacon: a curious cat",
+      "gist": "Found something you asked me to watch for.",
+      "agentId": "",
+      "color": "#7CF29A",
+      "tint": "#7CF29A",
+      "base": "beacon-base.png",
+      "overlays": [
+        "cat-tail.png",
+        "cat-ears.png",
+        "cat-whiskers.png"
+      ],
+      "eye": [
+        75,
+        101
+      ],
+      "lamp": [
+        75,
+        141
+      ],
+      "eyeR": 20,
+      "lampR": 6,
+      "anim": {
+        "idle": [
+          {
+            "name": "tail-swish",
+            "dur": 1.8,
+            "steps": [
+              {
+                "layer": "cat-tail.png",
+                "rotate": -12,
+                "pivot": [
+                  118,
+                  150
+                ],
+                "wave": 2
+              }
+            ]
+          },
+          {
+            "name": "ear-flick",
+            "dur": 0.9,
+            "steps": [
+              {
+                "layer": "cat-ears.png",
+                "rotate": 3,
+                "pivot": [
+                  75,
+                  70
+                ],
+                "wave": 3
+              },
+              {
+                "hop": 2,
+                "at": 0.5,
+                "len": 0.4
+              }
+            ]
+          }
+        ],
+        "twitches": [
+          {
+            "name": "whisker-twitch",
+            "dur": 0.5,
+            "steps": [
+              {
+                "layer": "cat-whiskers.png",
+                "dy": -1.5,
+                "wave": 2
+              }
+            ]
+          }
+        ]
+      },
+      "eyeGlow": 68,
+      "lampGlow": 16,
+      "glowOver": 24,
+      "glowOverAlpha": 55,
+      "eyeCore": 0
+    },
+    {
+      "id": "echo",
+      "name": "Echo Beacon",
+      "purpose": "Test: echoes your replies (hidden unless Show test beacons is on)",
+      "gist": "Echo test: reply here and the router sends it back.",
+      "agentId": "",
+      "color": "#C9A7FF",
+      "tint": "#C9A7FF",
+      "base": "beacon-base.png",
+      "overlays": [
+        "orb-crest.png"
+      ],
+      "eye": [
+        75,
+        101
+      ],
+      "lamp": [
+        75,
+        141
+      ],
+      "eyeR": 20,
+      "lampR": 6,
+      "anim": {},
+      "test": "true",
+      "eyeGlow": 68,
+      "lampGlow": 16,
+      "glowOver": 24,
+      "glowOverAlpha": 55,
+      "eyeCore": 0
+    }
+  ]
+}

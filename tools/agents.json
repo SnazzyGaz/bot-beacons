@@ -1,0 +1,5 @@
+{
+  "version": 1,
+  "note": "Beacon id -> the Grok Bot agent it carries messages for. Edit with: beaconctl.py agent-set / agent-remove. Optional \"ping\": what that bot does when its beacon is clicked.",
+  "agents": {}
+}

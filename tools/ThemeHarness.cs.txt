@@ -1,0 +1,204 @@
+// 1.2.6 harness: user themes survive a beacons.json version bump (ThemeMerge.Upgrade, three-way, and BeaconConfig.Load
+// end to end with a temporary settings folder), the beacons.user.json overlay, "beaconWord" and "trayIcon".
+// Build and run (from the repo root; Linux/mono, uses the CNG stub):
+//   d=$(mktemp -d); cp tools/MonoCngStub.cs.txt $d/CngStub.cs
+//   RES=""; for f in art/*.png; do RES="$RES -resource:$f,$(basename $f)"; done
+//   mcs -langversion:5 -nowarn:618,649,169,414,219 -main:BotBeacons.ThemeHarness -out:$d/th.exe $RES -resource:beacons.json,beacons.json \
+//     -r:System.Windows.Forms.dll -r:System.Drawing.dll -r:System.Web.Extensions.dll -r:System.Security.dll -r:System.Core.dll src/*.cs $d/CngStub.cs tools/ThemeHarness.cs.txt
+//   HOME=$(mktemp -d) mono $d/th.exe
+using System;
+using System.Collections.Generic;
+using System.Drawing;
+using System.Drawing.Imaging;
+using System.IO;
+using System.Linq;
+using System.Web.Script.Serialization;
+
+namespace BotBeacons
+{
+    static class ThemeHarness
+    {
+        static int ok, bad;
+        static void Check(bool c, string what) { if (c) ok++; else { bad++; Console.WriteLine("FAIL: " + what); } }
+        static readonly JavaScriptSerializer js = new JavaScriptSerializer();
+        static Dictionary<string, object> J(string s) { return (Dictionary<string, object>)js.DeserializeObject(s.Replace('\'', '"')); }
+        static Dictionary<string, object> B(Dictionary<string, object> doc, string id)
+        {
+            foreach (var x in (object[])doc["beacons"]) { var d = (Dictionary<string, object>)x; if ((string)d["id"] == id) return d; }
+            return null;
+        }
+        static string Get(Dictionary<string, object> d, string k) { object v; return d != null && d.TryGetValue(k, out v) ? Convert.ToString(v, System.Globalization.CultureInfo.InvariantCulture) : null; }
+
+        static int Main()
+        {
+            Pure();
+            EndToEnd();
+            Console.WriteLine(bad == 0 ? "THEME OK (" + ok + " checks)" : bad + " FAILED, " + ok + " ok");
+            return bad == 0 ? 0 : 1;
+        }
+
+        static void Pure()
+        {
+            var oldBase = J("{'version':2,'bubble':'card','anim':{'idle':5,'twitch':2},'beacons':[{'id':'a','name':'A','color':'#111111','art':'a.png'},{'id':'b','name':'B','color':'#222222','art':'b.png'}]}");
+            var shipped = J("{'version':3,'bubble':'card','anim':{'idle':6,'twitch':2,'blink':1},'beaconWord':'beacons','beacons':[{'id':'a','name':'A','color':'#101010','art':'a.png','sound':'a.wav'},{'id':'b','name':'B2','color':'#222222','art':'b.png'},{'id':'c','name':'C','art':'c.png'}]}");
+            var notes = new List<string>();
+
+            // 1. untouched default -> the new default
+            var r = ThemeMerge.Upgrade(ThemeMerge.Copy(oldBase), oldBase, shipped, notes);
+            Check(ThemeMerge.Same(r, shipped), "an unchanged default file becomes the new default");
+
+            // 2. a user who renamed A, recoloured B, picked the cloud bubble and slowed idling
+            var user = J("{'version':2,'bubble':'cloud','anim':{'idle':9,'twitch':2},'beacons':[{'id':'a','name':'My A','color':'#111111','art':'a.png'},{'id':'b','name':'B','color':'#abcdef','art':'b.png'}]}");
+            notes.Clear(); r = ThemeMerge.Upgrade(user, oldBase, shipped, notes);
+            Check(Get(r, "version") == "3", "version moves to the new one");
+            Check(Get(r, "bubble") == "cloud", "the user's bubble choice is kept");
+            var an = (Dictionary<string, object>)r["anim"];
+            Check(Get(an, "idle") == "9" && Get(an, "blink") == "1" && Get(an, "twitch") == "2", "anim: the user's idle kept, new blink added");
+            Check(Get(B(r, "a"), "name") == "My A" && Get(B(r, "a"), "color") == "#101010" && Get(B(r, "a"), "sound") == "a.wav", "beacon a: user's name kept, untouched colour updated, new field added");
+            Check(Get(B(r, "b"), "name") == "B2" && Get(B(r, "b"), "color") == "#abcdef", "beacon b: untouched name updated, user's colour kept");
+            Check(B(r, "c") != null && notes.Any(n => n.Contains("'c'")), "a new built-in beacon is added when the user kept all the old ones");
+            Check(Get(r, "beaconWord") == "beacons", "a new top-level key is added");
+
+            // 3. a user who deleted beacon b and the anim block
+            user = J("{'version':2,'bubble':'card','beacons':[{'id':'a','name':'A','color':'#111111','art':'a.png'}]}");
+            notes.Clear(); r = ThemeMerge.Upgrade(user, oldBase, shipped, notes);
+            Check(B(r, "b") == null && !r.ContainsKey("anim"), "a deleted beacon and a deleted key stay deleted");
+            Check(B(r, "c") == null, "with a built-in beacon deleted, new built-in beacons aren't added either");
+
+            // 4. a theme with its own beacons and no known base (an install from before 1.2.6)
+            user = J("{'version':2,'bubble':'cloud','anim':{'idle':5},'beacons':[{'id':'mine','name':'Mine','base':'m.png'},{'id':'b','name':'Bee','art':'bee.png'}]}");
+            notes.Clear(); r = ThemeMerge.Upgrade(user, null, shipped, notes);
+            Check(Get(r, "version") == "3" && Get(r, "bubble") == "cloud", "no base: the user's values win");
+            Check(B(r, "mine") != null && Get(B(r, "mine"), "name") == "Mine", "no base: the theme's own beacon kept as is");
+            Check(Get(B(r, "b"), "name") == "Bee" && Get(B(r, "b"), "art") == "bee.png" && Get(B(r, "b"), "color") == null && B(r, "b").Count == 3, "no base: a beacon sharing a built-in id is kept exactly as it is");
+            Check(B(r, "a") == null && B(r, "c") == null, "no base: built-in beacons are not added to a theme");
+            Check(Get((Dictionary<string, object>)r["anim"], "idle") == "5" && Get((Dictionary<string, object>)r["anim"], "blink") == "1", "no base: anim keeps idle, gains blink");
+            Check(Get(r, "beaconWord") == "beacons", "no base: a missing top-level key is added");
+            Check(((object[])r["beacons"]).Length == 2 && Get((Dictionary<string, object>)((object[])r["beacons"])[0], "id") == "mine", "beacon order kept");
+
+            // 4b. the look moves as one: a user who swapped beacon a's art keeps it even when the new list layers it
+            var shipped2 = J("{'version':3,'beacons':[{'id':'a','name':'A','color':'#111111','base':'base.png','overlays':['x.png'],'tint':'#ff0000'},{'id':'b','name':'B','color':'#222222','art':'b2.png'}]}");
+            user = J("{'version':2,'beacons':[{'id':'a','name':'A','color':'#111111','art':'mine.png'},{'id':'b','name':'B','color':'#222222','art':'b.png'}]}");
+            notes.Clear(); r = ThemeMerge.Upgrade(user, oldBase, shipped2, notes);
+            Check(Get(B(r, "a"), "art") == "mine.png" && Get(B(r, "a"), "base") == null && Get(B(r, "a"), "tint") == null && !B(r, "a").ContainsKey("overlays"), "own art: no new look fields mixed in");
+            Check(Get(B(r, "b"), "art") == "b2.png", "untouched art: the new built-in art is taken");
+
+            // 5. "upgrade": "keep"
+            user = J("{'version':2,'upgrade':'keep','beacons':[{'id':'x','name':'X','art':'x.png'}]}");
+            notes.Clear(); r = ThemeMerge.Upgrade(user, null, shipped, notes);
+            Check(Get(r, "version") == "3" && !r.ContainsKey("bubble") && ((object[])r["beacons"]).Length == 1, "upgrade: keep -> only the version moves");
+
+            // 6. overlay
+            var doc = J("{'version':2,'bubble':'card','anim':{'idle':5,'twitch':2},'beacons':[{'id':'a','name':'A','color':'#111111'},{'id':'b','name':'B'}]}");
+            var over = J("{'version':99,'bubble':'cloud','anim':{'idle':8},'beaconWord':'bots','beacons':[{'id':'a','name':'Alpha'},{'id':'b','remove':true},{'id':'n','name':'New','art':'n.png'},{'name':'no id'}]}");
+            r = ThemeMerge.Overlay(doc, over);
+            Check(Get(r, "version") == "2", "overlay: version is never taken from the overlay");
+            Check(Get(r, "bubble") == "cloud" && Get(r, "beaconWord") == "bots", "overlay: top-level keys replace / add");
+            Check(Get((Dictionary<string, object>)r["anim"], "idle") == "8" && Get((Dictionary<string, object>)r["anim"], "twitch") == "2", "overlay: objects merge key by key");
+            Check(Get(B(r, "a"), "name") == "Alpha" && Get(B(r, "a"), "color") == "#111111", "overlay: a beacon merges field by field");
+            Check(B(r, "b") == null && B(r, "n") != null && ((object[])r["beacons"]).Length == 2, "overlay: remove drops one, a new id is appended, an entry without id is ignored");
+            Check(Get(B(doc, "a"), "name") == "A", "overlay doesn't change its input");
+
+            // 7. Pretty is valid JSON and round-trips
+            var back = J(ThemeMerge.Pretty(shipped));
+            Check(ThemeMerge.Same(back, shipped), "Pretty round-trips");
+            Check(ThemeMerge.Same(J("{'x':1.5,'y':[1,2]}"), J("{'y':[1,2],'x':1.50}")), "Same ignores key order and number spelling");
+        }
+
+        static string Emb { get { return BeaconConfig.ReadEmbedded("beacons.json"); } }
+        static void Reset()
+        {
+            Directory.CreateDirectory(Settings.Dir);
+            foreach (var f in Directory.GetFiles(Settings.Dir, "beacons*")) File.Delete(f);
+            if (Directory.Exists(Path.Combine(Settings.Dir, "art"))) Directory.Delete(Path.Combine(Settings.Dir, "art"), true);
+            BeaconConfig.Root = null;
+        }
+        static string Ver(Dictionary<string, object> d, int v) { var c = ThemeMerge.Copy(d); c["version"] = v; return ThemeMerge.Pretty(c); }
+
+        static void EndToEnd()
+        {
+            Settings.Load();
+            var emb = J(Emb); int want = Convert.ToInt32(emb["version"]); string prev = "beacons.v" + (want - 1) + ".bak.json";
+            string F = BeaconConfig.FilePath, S = BeaconConfig.ShippedPath, O = BeaconConfig.OverridePath;
+
+            Reset();
+            var defs = BeaconConfig.Load();
+            Check(File.Exists(F) && File.ReadAllText(F) == Emb && File.Exists(S) && File.ReadAllText(S) == Emb, "first run: beacons.json and beacons.shipped.json are the built-in list");
+            Check(defs.Count == ((object[])emb["beacons"]).Length, "first run: every built-in beacon loads");
+
+            // same version: the file is never rewritten
+            string mine = Ver(J(Emb), want).Replace("\"Robo\"", "\"My Robot\"");
+            File.WriteAllText(F, mine); var t0 = File.GetLastWriteTimeUtc(F);
+            defs = BeaconConfig.Load();
+            Check(File.ReadAllText(F) == mine && defs.Any(d => d.Name == "My Robot"), "same version: the user's file is left exactly as it is");
+
+            // a bump with a known base: the user's rename survives, the backup is kept
+            Reset();
+            var oldB = J(Emb); ((Dictionary<string, object>)((object[])oldB["beacons"])[0])["gist"] = "old sample text";
+            File.WriteAllText(S, Ver(oldB, want - 1));
+            var u = J(Ver(oldB, want - 1)); var robot = B(u, "robot"); robot["name"] = "My Robot"; robot["color"] = "#00ff00";
+            File.WriteAllText(F, ThemeMerge.Pretty(u));
+            defs = BeaconConfig.Load();
+            var now = J(File.ReadAllText(F));
+            Check(Convert.ToInt32(now["version"]) == want, "bump: the file now has the new version");
+            Check(Get(B(now, "robot"), "name") == "My Robot" && Get(B(now, "robot"), "color") == "#00ff00", "bump: the user's robot name and colour are kept (1.2.5 replaced them)");
+            var first = (Dictionary<string, object>)((object[])now["beacons"])[0];
+            Check(Get(first, "gist") == Get((Dictionary<string, object>)((object[])emb["beacons"])[0], "gist"), "bump: a field the user didn't touch takes the new default");
+            Check(File.Exists(Path.Combine(Settings.Dir, prev)), "bump: the old file is kept as " + prev);
+            Check(File.ReadAllText(S) == Emb, "bump: beacons.shipped.json now holds the new built-in list");
+            Check(defs.Any(d => d.Id == "robot" && d.Name == "My Robot"), "bump: the app loads the merged file");
+
+            // a bump with no base and a theme of its own (an install from before 1.2.6)
+            Reset();
+            var theme = J("{'version':" + (want - 1) + ",'bubble':'cloud','beacons':[{'id':'own','name':'Own','art':'beacon.png','color':'#123456','fallback':true},{'id':'echo','name':'Echo','art':'beacon.png','test':true,'tint':'#ff00ff'}]}");
+            File.WriteAllText(F, ThemeMerge.Pretty(theme));
+            defs = BeaconConfig.Load();
+            Check(defs.Count == 2 && defs[0].Id == "own" && defs[0].Name == "Own" && defs[1].Id == "echo", "no base: the theme's beacons survive, no built-in beacons added");
+            Check(defs[1].Tint.ToArgb() == Color.FromArgb(255, 0, 255).ToArgb() && defs[1].Base == "" && defs[1].Art == "beacon.png", "no base: the theme's echo kept exactly (its art, its tint; no built-in layers mixed in)");
+            Check(Theme.BubbleStyle() == "cloud", "no base: bubble style kept");
+
+            // unreadable file: the 1.2.5 behaviour (backup + built-in list)
+            Reset(); File.WriteAllText(F, "{ \"version\": 1, oops");
+            defs = BeaconConfig.Load();
+            Check(File.ReadAllText(F) == Emb && File.Exists(Path.Combine(Settings.Dir, "beacons.v0.bak.json")), "broken file: replaced by the built-in list, old copy kept");
+
+            // overlay
+            Reset(); BeaconConfig.Load();
+            Check(BeaconConfig.Word == "beacons", "beaconWord defaults to beacons");
+            File.WriteAllText(O, "{\"beaconWord\":\"bots\",\"bubble\":\"cloud\",\"beacons\":[{\"id\":\"robot\",\"name\":\"Robo\"},{\"id\":\"cat\",\"remove\":true},{\"id\":\"extra\",\"name\":\"Extra\",\"art\":\"beacon.png\"}]}");
+            defs = BeaconConfig.Load();
+            Check(defs.Any(d => d.Id == "robot" && d.Name == "Robo") && !defs.Any(d => d.Id == "cat") && defs.Any(d => d.Id == "extra"), "beacons.user.json: rename, remove, add");
+            Check(File.ReadAllText(F) == Emb, "beacons.user.json is never written into beacons.json");
+            Check(BeaconConfig.Word == "bots" && BeaconConfig.WordCap == "Bots", "beaconWord from the overlay");
+            Check(Theme.BubbleStyle() == "cloud", "bubble style from the overlay");
+            File.WriteAllText(O, "{\"beaconWord\":\"" + new string('x', 40) + "\"}"); BeaconConfig.Load();
+            Check(BeaconConfig.Word == "beacons", "a beaconWord over 24 characters is ignored");
+            File.WriteAllText(O, "{ not json"); defs = BeaconConfig.Load();
+            Check(defs.Count == ((object[])emb["beacons"]).Length, "a broken beacons.user.json is ignored");
+            File.WriteAllText(O, "{\"beacons\":[{\"id\":\"orb\",\"remove\":true},{\"id\":\"robot\",\"remove\":true},{\"id\":\"cat\",\"remove\":true},{\"id\":\"echo\",\"remove\":true}]}");
+            defs = BeaconConfig.Load();
+            Check(defs.Count == ((object[])emb["beacons"]).Length && File.ReadAllText(F) == Emb, "an overlay that removes every beacon is skipped (no loop, beacons.json untouched)");
+            File.Delete(O);
+
+            // trayIcon
+            Reset(); BeaconConfig.Load();
+            Check(BeaconConfig.TrayIcon() == null, "no trayIcon: null (the app keeps its own icon)");
+            Directory.CreateDirectory(Path.Combine(Settings.Dir, "art"));
+            using (var bmp = new Bitmap(48, 40)) { using (var g = Graphics.FromImage(bmp)) g.Clear(Color.Red); bmp.Save(Path.Combine(Settings.Dir, "art", "tray.png"), ImageFormat.Png); }
+            File.Copy("art/icon.ico", Path.Combine(Settings.Dir, "art", "tray.ico"));
+            foreach (var name in new[] { "tray.png", "tray.ico", "beacon.png" })
+            {
+                File.WriteAllText(O, "{\"trayIcon\":\"" + name + "\"}"); BeaconConfig.Load();
+                Icon ic = null; try { ic = BeaconConfig.TrayIcon(); } catch (Exception ex) { Console.WriteLine("  trayIcon " + name + ": " + ex.Message); }
+                Check(ic != null && ic.Width == 32 && ic.Height == 32, "trayIcon " + name + " loads at 32 px" + (name == "beacon.png" ? " (built-in art)" : ""));
+                if (ic != null) ic.Dispose();
+            }
+            foreach (var name in new[] { "missing.png", "..\\\\x.png", "../x.png" })
+            {
+                File.WriteAllText(O, "{\"trayIcon\":\"" + name + "\"}"); BeaconConfig.Load();
+                Check(BeaconConfig.TrayIcon() == null, "trayIcon '" + name + "': null (falls back to the app icon)");
+            }
+            File.Delete(O);
+        }
+    }
+}

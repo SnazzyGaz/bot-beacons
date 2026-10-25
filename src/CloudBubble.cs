@@ -218,7 +218,7 @@ namespace BotBeacons
                 {
                     if (IsDisposed) return;
                     m.Sending = false; host.Box.ReadOnly = false;
-                    if (ok) { host.Box.Text = ""; m.Status = "Sent (encrypted)"; }
+                    if (ok) { host.Box.Text = ""; m.Status = Wake.SentStatus(owner.Def.Id, "Sent (encrypted)"); }   // 1.2.6: or "no wake hook"
                     else m.Status = "Send failed: " + err;
                     Render(); if (Form.ActiveForm == host) host.Box.Focus();
                 }));

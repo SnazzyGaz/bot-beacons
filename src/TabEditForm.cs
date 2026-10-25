@@ -20,7 +20,7 @@ namespace BotBeacons
         readonly Panel swatches;
         readonly Seg sound;
         readonly Toggle show;
-        Color color; string pickedFile; string imageMode; bool removeArmed;
+        Color color; string pickedFile; string imageMode, startMode; bool removeArmed;
         readonly Label note;
 
         public TabEditForm(BeaconForm beacon)
@@ -42,11 +42,12 @@ namespace BotBeacons
             // 1.2.3: three choices; Beacon picture is the default, Bot's profile picture is greyed out until the bot sends one
             bool hasAvatar = System.IO.File.Exists(Avatars.PathFor(d.Id));
             imageMode = p.Image == "custom" && System.IO.File.Exists(TabStore.CustomPath(d.Id)) ? "custom" : p.Image == "profile" && hasAvatar ? "profile" : "beacon";
+            startMode = imageMode;
             beaconPic = new ChoiceRow("Beacon picture", "default \u2014 the beacon's own art", TabStore.BeaconPicture(d)) { Left = x, Top = y, Width = w, Height = 44 };
             y += 48;
             botPic = new ChoiceRow("Bot's profile picture", hasAvatar ? "sent by the bot" : "the bot hasn't sent one", hasAvatar ? TabStore.LoadFile(Avatars.PathFor(d.Id)) : null) { Left = x, Top = y, Width = w, Height = 44, Enabled = hasAvatar };
             y += 48;
-            customPic = new ChoiceRow("Custom image", "PNG / ICO", System.IO.File.Exists(TabStore.CustomPath(d.Id)) ? TabStore.LoadFile(TabStore.CustomPath(d.Id)) : null) { Left = x, Top = y, Width = w - 84, Height = 44 };
+            customPic = new ChoiceRow("Custom image", "PNG / ICO / GIF", System.IO.File.Exists(TabStore.CustomPath(d.Id)) ? TabStore.LoadFile(TabStore.CustomPath(d.Id)) : null) { Left = x, Top = y, Width = w - 84, Height = 44 };
             choose = Btn("Choose\u2026", x + w - 78, y + 9, 78, 26, Field, Fg);
             choose.Click += (s, e) => Choose();
             beaconPic.Click2 += () => SetImage("beacon"); botPic.Click2 += () => SetImage("profile"); customPic.Click2 += () => { if (pickedFile == null && !System.IO.File.Exists(TabStore.CustomPath(b.Def.Id))) Choose(); else SetImage("custom"); };
@@ -148,7 +149,7 @@ namespace BotBeacons
                 string err = TabStore.ImportCustom(d.Id, pickedFile);
                 if (err != null) { note.ForeColor = RedT; note.Text = err; return; }
             }
-            p.Image = imageMode;
+            if (imageMode != startMode || pickedFile != null) { p.Image = imageMode; p.ImageBy = "user"; }   // 1.2.6: unchanged keeps a pending "profile"
             p.Color = color.ToArgb() == d.Color.ToArgb() ? "" : TabStore.Hex(color);
             if (sound.Index == 2) Sound.SetMuted(d.Id, true);
             else

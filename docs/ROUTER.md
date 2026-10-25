@@ -1,6 +1,6 @@
 # Bot Beacons reply router
 
-When the user types a reply on a beacon, or clicks a quiet beacon to ping it, the desktop app can wake **one** Grok Bot agent through a webhook routine: the **router bot**. The router looks at what is waiting and wakes whichever bot owns each beacon. This file explains how the router works. The prompt to paste into the routine is in [ROUTER-PROMPT.md](ROUTER-PROMPT.md).
+When the user types a reply on a beacon, or pings it (right-click → **Ping**), the desktop app can wake **one** Grok Bot agent through a webhook routine: the **router bot**. The router looks at what is waiting and wakes whichever bot owns each beacon. This file explains how the router works. The prompt to paste into the routine is in [ROUTER-PROMPT.md](ROUTER-PROMPT.md).
 
 Without a router everything else still works: bots can send to their beacons, and replies wait safely on the relay until a bot reads them. The router is what makes replies and pings reach a bot within seconds.
 
@@ -48,7 +48,8 @@ Reply text is the user's own words, sent over the signed channel from their PC. 
 ## Notes for whoever creates the routine
 
 - **Trigger:** webhook. **Owner:** the router bot (any one of the user's bots; pick the one that is usually least busy). There is exactly one router per user, however many bots and beacons there are.
-- **URL and key:** after the routine is saved, its panel in the Grok Bot app shows the webhook URL and the sender key. The user copies both into the desktop app: right-click any beacon, choose **Wake hook…**, paste them, click **Test**, then **Save**. The key must never be pasted into chat.
+- **URL and key:** after the routine is saved, its panel in the Grok Bot app shows the webhook URL and the sender key. The user copies both into the desktop app: right-click any beacon, choose **Bots** → **Wake hook…**, paste them, click **Test**, then **Save**. The key must never be pasted into chat.
+- **Check it with a real ping (required at setup).** The wake hook lives only in the app on the PC, so the box can't see whether it is saved. After the user saves it, they ping a beacon (right-click → **Ping**) and the setup bot checks `beaconctl.py route --json` about a minute later: the ping must be answered, or at least gone from `to_notify`. A ping still in `to_notify` means nobody was woken (SETUP.md, step 8, "Ping test"). From 1.2.6 the app also shows **Wake hook… (not set)** in the Bots menu and "wake hook not set" in the tray tooltip while none is saved.
 - **Concurrency:** `beaconctl.py` takes a file lock, so overlapping wakes are safe.
 - **Retention:** replies are kept for 7 days in `secrets/inbox.json` next to `beaconctl.py`, then pruned.
 - **Why the wake carries no text:** the webhook passes through Grok Bot's servers as plain JSON, so it only says "something is waiting". The text stays end-to-end encrypted on the relay until `beaconctl.py` decrypts it on the box.

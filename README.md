@@ -4,16 +4,18 @@ Little floating companions on your Windows desktop, one for each of your Grok Bo
 
 ![The starter pack: orb, robot and cat](docs/starter-pack.png)
 
+> **You'll need the Grok Bot desktop app.** Your bot sets up and runs Bot Beacons from the Grok Bot app on your PC. Grok in X DMs or in the Grok web or X chat can read this page, but it can't install anything on your computer. If that's where you pasted the link, get the Grok Bot app first, then give your bot this link from there (see [Getting it](#getting-it)).
+
 ## What it is
 
-Bot Beacons are small floating avatars on your Windows desktop, one for each of your Grok Bots. They sit quietly and play a small idle animation. When a bot has something for you, its beacon glows and shows a one-line summary. **Open in chat** takes you straight to that chat. Click a beacon to open its conversation and reply right there, or right-click → **Ping** to call its bot. You don't need the Grok Bot app open.
+Bot Beacons are small floating avatars on your Windows desktop, one for each of your Grok Bots. They sit quietly and play a small idle animation. When a bot has something for you, its beacon glows and shows a one-line summary. **Open in chat** takes you straight to that chat. Click a beacon to open its conversation and reply right there. Middle-click it (or right-click → **Ping**) to call its bot. You don't need the Grok Bot app open.
 
 ## Why install it?
 
 Your bots work in the background, but you only find out what they've done if you keep checking the app. Bot Beacons puts them on your desktop as small avatars that stay out of your way. You can see at a glance when one needs you, and call on any of them with one click.
 
 - **Know when a bot needs you, without checking.** A beacon glows when its bot has finished something, found something, or needs you to approve or sign in. Glance over, read the one-line summary, and open the chat only if it matters.
-- **Call a bot in two clicks.** Right-click a beacon → **Ping** to call its bot. By default the bot asks how it can help, but you can give each bot its own ping action. A news bot could send the top headlines, a research bot a status rundown, a briefing bot today's summary.
+- **Call a bot in one click.** Middle-click a beacon or tab (or right-click → **Ping**) to call its bot. By default the bot asks how it can help, but you can give each bot its own ping action. A news bot could send the top headlines, a research bot a status rundown, a briefing bot today's summary.
 - **Quick replies without the app.** Answer straight from the bubble for small back-and-forths.
 - **Stays out of your way.** It never interrupts your typing. Alerts just glow, and the important ones stay until you deal with them. Don't want to see a beacon today? Hide it. Its messages wait for you, and the tray icon still tells you when something arrives.
 - **Your bots, your style.** Every beacon can look however you like. A pile of chat tabs becomes a row of little desk companions.
@@ -24,12 +26,14 @@ Put simply, it gives you a calm glance at what your bots are up to and one click
 
 Give your Grok Bot the link to this project and say **"set this up for me"**. Your bot reads [docs/SETUP.md](docs/SETUP.md) and does the rest:
 
+> **Bots: if a user gives you this link, your job is to install and set up Bot Beacons for them, end to end, now.** Follow [docs/SETUP.md](docs/SETUP.md): get the release and check its checksum, install it, pair it, register the beacons, set up the reply hook and its routine, set the tabs to show the bots' profile pictures, and run the end-to-end ping test. Don't just describe it or point them at the zip. Ask the user only for what only they can do (approving the cards for commands on their PC, typing the pairing code, clicking in the app), one step at a time. The reply hook is required: without it, nobody sees or answers their replies.
+
 - It makes a beacon for each of your bots and installs the app on your PC.
 - It links the app securely to your bots and sets it to start with Windows.
-- It sets up a reply router, so your replies and pings reach the right bot within seconds.
+- It sets up the reply hook: a reply router routine and the app's **Wake hook…**, so your replies and pings reach the right bot within seconds. This part is required. Without it, nobody would see or answer your replies.
 - If you want, it makes a folder in your home directory for finished work like PDFs.
 
-All you do is approve a few cards, paste one pairing code into chat, and copy one webhook URL and key from the Grok Bot app into the beacon's **Wake hook…** window.
+All you do is approve a few cards, paste one pairing code into chat, copy one webhook URL and key from the Grok Bot app into the beacon's **Wake hook…** window, and ping your bot's beacon once so it can check your replies really reach it. Setup isn't finished until that ping gets an answer.
 
 ### Download (ready-to-run)
 
@@ -43,11 +47,11 @@ It installs for your user only, with no admin rights, and starts the app, which 
 
 You start with three ready-made characters: a cat, a robot and a glowing white orb. They share one body with different accessories, idle animations and colours. Your bot can design fully custom ones for you, each with its own look, idle animation and alert. See [docs/THEMES.md](docs/THEMES.md).
 
-Right-click a beacon (or the tray icon) for one short menu: **Reply to** each bot, **Mark all read**, then **Skin** (all floating or all tabs, bubble style: dark card or cloud, and Animations: Full, Subtle or Off plus the frame rate), **Layout** (tab size, open tabs on click or hover, throw to dock), **Sounds**, **Bots** (show or hide, pause, test beacons, pairing), **Updates**, **Start with Windows**, **About** and **Exit**. Motion is drawn at 60 fps with sub-pixel smoothing by default.
+Right-click a beacon (or the tray icon) for one short menu: **Reply to** each bot, **Mark all read**, then **Skin** (all floating or all tabs, bubble style: dark card or cloud, and Animations: Full, Subtle or Off plus the frame rate), **Layout** (tab size, open tabs on click or hover, throw to dock, tab pictures), **Sounds**, **Bots** (show or hide, pause, test beacons, pairing), **Updates**, **Start with Windows**, **About** and **Exit**. Motion is drawn at 60 fps with sub-pixel smoothing by default.
 
 ### Floating beacons and tabs
 
-Each beacon can float on your desktop (the default) or be a **tab**: a small bookmark docked to the edge of your screen. Click anywhere on a floating beacon to open its conversation; drag it to move it. Drag a floating beacon to the outer edge of a monitor and it docks as a tab there, or **throw** it at an outer edge and it docks where it hits (right-click → Layout → **Throw to dock** turns this off). Between two monitors, hold the beacon still at the shared edge for half a second and a dock preview appears: let go to dock it there, or keep moving to cross to the other screen. Drag a tab well into the screen and it floats again. Floating beacons and tabs can be on screen together; right-click → **Skin** has **All floating** and **All tabs**. Click a tab and its card slides out with the bot's picture, role, time and full latest message (links clickable). Click the card to reply right there, with **Open in chat** and **Dismiss** beside it. Esc, a click elsewhere or another click on the tab slides it back. **Open tabs on** (Click / Hover) and **Tab size** (Small / Normal / Large) are under Layout. Click the grip at the end of a strip, or Layout → **Open the whole shelf**, for the whole shelf. Alerts pop the tab out with a red "!" and play its sound. Each tab shows the beacon's own picture in a disc of its colour by default. The pencil lets you rename a tab, pick its picture (**Beacon picture**, the **Bot's profile picture** once the bot has sent one with `beaconctl.py avatar`, or a **Custom image**: your own PNG/ICO), colour and sound (Custom, Classic or Off). Hidden tabs come back from right-click → Bots → **Show or hide**. Your edits stay on your PC.
+Each beacon can float on your desktop (the default) or be a **tab**: a small bookmark docked to the edge of your screen. Click anywhere on a floating beacon to open its conversation; drag it to move it; middle-click it to ping its bot (the same as right-click → **Ping**, with the same wiggle and the same limit of one ping every 30 seconds). Hover over a beacon or tab for a reminder. Drag a floating beacon to the outer edge of a monitor and it docks as a tab there, or **throw** it at an outer edge and it docks where it hits (right-click → Layout → **Throw to dock** turns this off). Between two monitors, hold the beacon still at the shared edge for half a second and a dock preview appears: let go to dock it there, or keep moving to cross to the other screen. Drag a tab well into the screen and it floats again. Floating beacons and tabs can be on screen together; right-click → **Skin** has **All floating** and **All tabs**. Click a tab and its card slides out with the bot's picture, role, time and full latest message (links clickable). Click the card to reply right there, with **Open in chat** and **Dismiss** beside it. Esc, a click elsewhere or another click on the tab slides it back. **Open tabs on** (Click / Hover) and **Tab size** (Small / Normal / Large) are under Layout. Click the grip at the end of a strip, or Layout → **Open the whole shelf**, for the whole shelf. Alerts pop the tab out with a red "!" and play its sound. Each tab shows the beacon's own picture in a disc of its colour by default. The pencil lets you rename a tab, pick its picture (**Beacon picture**, the **Bot's profile picture** once the bot has sent one with `beaconctl.py avatar`, or a **Custom image**: your own PNG, ICO or GIF; an animated GIF keeps moving, following your Animations setting), colour and sound (Custom, Classic or Off). Middle-click a tab to ping its bot. Layout → **Tab pictures** decides what happens when a bot sends its profile picture: **Bot's profile pictures** (tabs switch to it), **Beacon pictures** (tabs keep the beacon's picture) or **Choose per tab** (the default: nothing changes until you pick it with the pencil). A custom image is never replaced. Hidden tabs come back from right-click → Bots → **Show or hide**. Your edits stay on your PC.
 
 **New bots add their own tab.** You don't make tabs in the app. A bot gets one by sending to its own beacon id, and it tells you that id in chat. The first time a paired bot sends to an id you don't have yet, Bot Beacons asks: **"New bot <name> wants a tab."** with **Add** (the default) and **Not now**. The prompt is small, sits at the bottom-right and never takes the keyboard focus. **Add** gives the bot its own tab, shows the message that triggered the prompt on it and uses the bot's profile picture if it sent one. **Not now** shows the message on the default beacon with the id in brackets, as before, and doesn't ask about that id again until Bot Beacons restarts. Only signed messages from your paired bots can ask. Local test commands, replies and malformed ids never do. You can still rename, hide or remove any tab with the pencil or the right-click menu.
 
@@ -77,6 +81,28 @@ More detail: [docs/TECHNICAL.md](docs/TECHNICAL.md).
 ## Cost to your PC
 
 It's very light: about 3% of one CPU core with full animations, and close to nothing on Subtle or Off. It is a single small program with no installer, no admin rights and no background services. On the network it keeps one quiet connection open to the relay instead of checking it every few seconds.
+
+## Make it yours
+
+Bot Beacons is a starting point, not a finished shape. A beacon is just a named spot on your desktop that something can light up, and that something doesn't have to be a chat bot.
+
+**Works today** with `beaconctl.py send` / `attention` (run by one of your bots or by a plain script on the box, on whatever schedule you give it) and a theme:
+
+- **Weather beacon:** a small cloud that pops up the morning forecast, or answers a ping with it.
+- **Build watcher:** a script checks your CI and lights its beacon up when a build passes, or sends an `attention` when one fails.
+- **GitHub stars:** "Your repo just passed 100 stars."
+- **Moon phase:** one line at dusk with tonight's phase.
+- **Water and stretch nudges:** a gentle beacon every hour or two while you work.
+- **Focus timer:** a beacon that tells you when your 25 minutes are up.
+- **Any look you like:** an owl, a lighthouse, a tiny spaceship, your own drawings. Layers, idle animations, accessories, alert sounds, the tray icon and what beacons are called are all theme settings.
+
+**Things you could build or fork** (not in the app today):
+
+- **PC stats:** CPU, memory or temperature on a beacon. Scripts run on the box, not your PC, so this needs a small addition to the app.
+- **Beacons that change shape:** turn them into transformers that unfold when news arrives, or creatures that grow as your streak goes on.
+- **Redo how tabs work:** a different dock, a new card, a whole new skin.
+
+It's MIT-licensed, so take it apart and make it yours. Looks: [docs/THEMES.md](docs/THEMES.md). Driving beacons from scripts or bots: [docs/AGENT-GUIDE.md](docs/AGENT-GUIDE.md). Or just describe what you want to your bot.
 
 ## Customising and rebuilding
 

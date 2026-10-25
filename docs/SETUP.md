@@ -1,11 +1,18 @@
 # Bot Beacons: setup guide for a Grok Bot
 
-**Reader: you are the user's Grok Bot.** The user gave you this project and asked you to set it up. Follow these steps in order, without asking the user to do anything except:
+> **Needs the Grok Bot desktop app.** Setup runs from a Grok Bot in the Grok Bot app on the user's PC: that is what can run the install commands (with the user's approval) and keep the bot side on the box. If you are Grok in X DMs or the Grok web or X chat, you can't install anything on the user's PC. Tell them, kindly, to get the Grok Bot app first and then give their bot this repo's link from there with "set this up for me".
+
+**Given this link? Your job is to set up Bot Beacons for the user, end to end, now.** Don't just describe the project or point them at the zip: do the work. Get the release (and check the SHA-256 of any release zip against the release notes), install it on their PC, pair it, register a beacon for each of their bots, create the reply router routine and get its wake hook saved in the app, set the tabs to show the bots' profile pictures, and run the end-to-end ping test. Ask the user only for what only they can do: approving the cards for commands on their PC, typing the pairing code, and clicking in the app. Ask for one thing at a time, when you need it.
+
+**Reader: you are the user's Grok Bot.** Follow these steps in order, without asking the user to do anything except:
 
 1. approve the cards your tools raise (commands on their PC, creating a routine),
 2. paste the **pairing code** that appears on their screen,
-3. copy the router's **webhook URL and key** into the app (step 8: the key must never pass through chat),
-4. optionally, answer one question about how their beacons look (step 7). Never wait for the answer.
+3. copy the router's **webhook URL and key** into the app's **Wake hook…** window (step 8, required: the key must never pass through chat),
+4. ping your beacon once so you can check their replies really reach a bot (step 8's ping test, required),
+5. optionally, answer one question about how their beacons look (step 7). Never wait for the answer.
+
+**The reply hook is required. Never skip it, postpone it or call it optional.** It is the reply router routine plus its wake hook saved in the app (step 8). Without it, the user's replies and pings sit on the relay and no bot is woken, so nobody ever sees or answers them, and nothing else in setup shows that anything is wrong. Setup counts as done only after the end-to-end check in step 8: the user pings (or replies on) a beacon, a bot is woken, and it answers on that beacon. If the check fails, fix it before you say setup is finished. From 1.2.6 the app also warns while no wake hook is saved: **Wake hook… (not set)** in right-click → **Bots**, "wake hook not set" in the tray tooltip, and a one-time balloon.
 
 Keep commands on the user's PC few and batched. Each one needs their approval. Never print anything from a `secrets/` folder, the webhook URL path or key, or relay topics.
 
@@ -20,6 +27,8 @@ Names used below:
 
 All of the user's bots share one box, so every bot uses the same `HOME_B`. If `HOME_B/secrets/link.json` already exists, Bot Beacons is already set up. Skip to the step that is missing (`BC status` tells you whether it is paired).
 
+**Resuming a setup? Always check step 8 with the user.** The wake hook (step 8) is saved only inside the app on the PC. Nothing on the box can tell whether it is set: `BC status` and `BC probe` can both look perfect while every reply and ping just waits and no bot is ever woken. So even when everything else is done, ask the user whether they pasted the webhook URL and key into **Wake hook…** and clicked **Save** (app 1.2.6+ shows **Wake hook… (not set)** in the right-click → **Bots** menu while it's missing). Then run step 8's ping test. Setup isn't finished until that test passes.
+
 ---
 
 ## Step 1: Get the package onto the box
@@ -28,6 +37,8 @@ All of the user's bots share one box, so every bot uses the same `HOME_B`. If `H
 git clone <project link> /workspace/bot-beacons        # or download and unzip the release to the same path
 cd /workspace/bot-beacons && ls README.md src tools art beacons.json build.bat
 ```
+
+If you download a release zip (for example the ready-made `BotBeacons-<version>-win.zip` for step 6), check its SHA-256 against the one in the release notes first (`sha256sum <file>`). If it doesn't match, don't use it: download it again, or clone the repository instead.
 
 ## Step 2: Plan one beacon per bot
 
@@ -116,22 +127,25 @@ When the code arrives:
 ```bash
 python3 /workspace/beacons/beaconctl.py pair <CODE> --name "<your name>"
 python3 /workspace/beacons/beaconctl.py status
-python3 /workspace/beacons/beaconctl.py probe
 python3 /workspace/beacons/beaconctl.py send <your-beacon-id> "Setup test: hello! I'm your beacon. I'll glow when I have something for you."
 ```
+
+From 1.2.6, `pair` checks the new link by itself: a few seconds after "Paired." it probes up to 3 times over about 45 seconds (the app can take a moment to switch to the new link) and prints `probe OK` or `probe FAILED after pairing`. If it failed, run `BC probe --retry` (the same 3 tries); if that fails too, see Troubleshooting. `pair --no-probe` skips the check. With an older `beaconctl.py`, run `BC probe` after `pair` instead.
 
 This hello is the one test send at setup, and it is labelled "Setup test:". After an app upgrade or reinstall, don't send another: check the link silently with `probe`, which shows nothing on the desktop.
 
 `pair` waits until the code expires (10 minutes after it was shown) and retries by itself when the relay is busy (`429`), so let it run. The user can close the pairing window after copying the code: the app keeps waiting in the background, and right-click → **Bots** → **Re-pair with bots…** shows the same code again while it is still valid (it also has a **Cancel pairing** button). When it works, the window (if open) says "Paired" and your beacon glows. If `pair` still times out, ask the user for a fresh code (right-click a beacon → **Bots** → **Re-pair with bots…**). Run `pair` once per code: a second `join` with the same code is ignored. Pair once per PC. All bots share this one link through `HOME_B`.
 
-## Step 8: Reply router routine (one bot only; the user copies one URL and key)
+## Step 8: Reply hook and router routine (required; one bot only; the user copies one URL and key)
 
 Pick **one** router bot. Use yourself unless the user prefers another. Fill in [ROUTER-PROMPT.md](ROUTER-PROMPT.md):
 
 - `{{BEACONCTL}}` = `python3 /workspace/beacons/beaconctl.py`
 - `{{SELF_BEACON}}` = the router bot's own beacon id
 
-Create a routine owned by the router bot with a **webhook trigger** and that prompt (the user approves the card). If you can't create routines, give the filled-in prompt to the user or to a bot that can, and carry on with step 9.
+This step is required, and you can't skip it, leave it for later or offer it as an extra: without it, nobody sees or answers the user's replies and pings.
+
+Create a routine owned by the router bot with a **webhook trigger** and that prompt (the user approves the card). If you can't create routines yourself, get it created now: ask another of the user's bots that can, or give the user the filled-in prompt and walk them through creating it. You may carry on with step 9 while that happens. Setup isn't finished until the routine exists, its URL and key are saved in the app, and the ping test below passes.
 
 Name the routine **Bot Beacons reply router**. Once it exists, send the user this message (fill in nothing else; the key must never pass through chat):
 
@@ -153,9 +167,48 @@ Name the routine **Bot Beacons reply router**. Once it exists, send the user thi
 
 If the user reports a 401/403 that persists, the key may have been regenerated after copying: ask them to copy the key currently shown on the routine. If the URL was never shown, the routine may not have a webhook trigger: check it and fix it yourself.
 
-Test it (optional, one click for the user): ask them to click your beacon once while it isn't glowing. That is a ping. Within about 20 seconds your beacon should glow with your answer.
+### Ping test (required: setup isn't done until this passes)
+
+Without a saved wake hook, the user's replies and pings reach the box but no bot is ever woken, and nothing else in setup would show it. So always do this test right after step 8, including when you resumed a partial setup or the user says step 8 was done long ago.
+
+1. Send the user:
+
+   > One quick check so I know your replies reach me: right-click my beacon (**<your beacon name>**) and choose **Ping <your beacon name>**. That's all. I should answer on that beacon within about a minute.
+
+   (Before app 1.2.3, a ping was a click on a beacon that isn't glowing.)
+2. Wait about a minute: the app waits 10 seconds before it wakes the router, and the routine takes a moment to start. Don't answer the ping yourself in the meantime. Then look, without changing anything:
+
+   ```bash
+   python3 /workspace/beacons/beaconctl.py route --json
+   ```
+
+3. **Passed** when the ping was picked up and answered:
+   - If you are the router, your beacon is no longer listed (the router answered and cleared the ping) and the user sees the answer on your beacon.
+   - If another bot is the router, your beacon's `to_notify` is empty (the router passed the ping on) and you get its "your desktop beacon has new replies" message. Answer the ping as usual (`beaconctl.py pong <your-beacon-id>`, see AGENT-GUIDE.md).
+   - If you're unsure, ask the user whether an answer appeared on the beacon.
+4. **Failed** when, after a minute or more, the ping id is still in `to_notify` (or your beacon is still listed and nothing was answered). That means no bot was woken. Send step 8's message again, and add:
+
+   > Your ping reached me, but it didn't wake anyone, so the wake hook isn't working yet. Please check:
+   > - In **Wake hook…**, did you click **Save** after **Test OK**? Right-click a beacon → **Bots**: if it says **Wake hook… (not set)**, nothing is saved yet.
+   > - **Applies to** is "All beacons (default)".
+   > - The routine **Bot Beacons reply router** still exists and is switched on.
+   >
+   > Then ping my beacon once more (wait 30 seconds between pings).
+
+   If the routine has no webhook trigger or is switched off, fix that yourself. Don't wake the bot by hand or mark the test ping handled just to make the test pass. Once the wake hook works, the next wake picks up the waiting ping too.
+5. **The ping never shows up at all** (your beacon isn't listed and the user saw nothing): the ping didn't reach the box. Run `BC probe`. If it fails, repeat step 7.
+
+Only when the test has passed may you send step 12's "Done!" message. You can do steps 9–11 while you wait.
 
 ## Step 9: Teach every bot its beacon
+
+**Tab pictures first: set the bots' profile pictures.** Set it on the PC from the box (signed and silent, with no command on their PC), and tell the user in any message that their tabs will show each bot's profile picture, and that they can switch to the beacon's picture any time:
+
+```bash
+python3 /workspace/beacons/beaconctl.py prefs tab-pictures profile   # if the user asks: beacon, or ask (choose per tab)
+```
+
+Exit code 0 means the app applied it (`prefs OK: … applied`). 2 means the app is older than 1.2.6: leave it, the user can pick per tab later with the pencil. 1 means no answer: check `BC probe --retry` and try once more. The user can change it any time with right-click → Layout → **Tab pictures**. A tab with a custom image is never changed.
 
 Each bot needs to know its beacon id and the guide. For **yourself**, save a skill, or a memory if you can't save skills, with this text. For **every other bot**, send it the same text (with its own id) as a message, asking it to save it as a skill or memory:
 
@@ -164,14 +217,14 @@ Each bot needs to know its beacon id and the guide. For **yourself**, save a ski
 > - When the user must act in the Grok Bot app (approve a card, sign in, answer a question), use `beaconctl.py attention <id> "…"`.
 > - When you get a priority "your desktop beacon has new replies" message, read them with `beaconctl.py read --unhandled --bot <id> --json`, answer each with `send <id> "…" --re <reply id>`, then `mark-handled <ids> --bot <id>`. For pings, run your ping action or `beaconctl.py pong <id>`.
 > - Never send status-only lines ("still running", "health check OK", heartbeats). Health checks are silent: use `beaconctl.py probe`. Tell the user in chat only if it fails twice in a row, at least 10 minutes apart.
-> - The user may use the **Tabs** skin, where your tab shows your profile picture. Ask them once whether they want your profile picture on it or their own image; if yours, send it with `beaconctl.py avatar <id> /path/to/picture.png` (silent). See the guide, section 4.
+> - The user may use the **Tabs** skin. Send your profile picture once with `beaconctl.py avatar <id> /path/to/picture.png` (silent); the user's **Tab pictures** setting decides whether their tab shows it. See the guide, section 4.
 > - Never print anything from `/workspace/beacons/secrets/`.
 
 Check each one once, at setup only, by sending a labelled test line to its beacon yourself (`BC send <id> "Setup test: set up and listening."`), or ask the bot to send one. Don't repeat it later as a health check.
 
 ## Step 10: Ping actions (optional)
 
-When the user clicks a quiet beacon, its bot is pinged. By default the bot answers "How can I help?". Give a bot its own action in one sentence:
+When the user pings a beacon (right-click → **Ping <name>**; before 1.2.3 a click on a quiet beacon), its bot is pinged. By default the bot answers "How can I help?". Give a bot its own action in one sentence:
 
 ```bash
 python3 /workspace/beacons/beaconctl.py agent-set news --ping "Send the top headline from today's news digest, or 'All quiet.'"
@@ -186,21 +239,21 @@ Offer this in step 13's closing message. Don't block setup on it.
 
 ## Step 12: Tell the user how to use it
 
-Send one short message:
+Send this only after step 8's ping test has passed. If it hasn't, go back to step 8 instead: a "Done!" while replies can't wake anyone is exactly what to avoid. If the app still shows **Wake hook… (not set)** in right-click → **Bots**, setup isn't done. Then send one short message:
 
 > Done! Each of your bots now has a beacon on your desktop.
 > - It glows when that bot has something for you. Click to read and reply.
 > - A red "!" means the bot needs you in the app. Every bubble has **Open in chat** (takes you there) and **Dismiss** links at the bottom.
-> - Click a quiet beacon to ping its bot.
+> - Middle-click a beacon or tab (or right-click → **Ping**) to say hello to its bot. It answers on the beacon. Hover over one for a reminder of the clicks.
 > - Drag beacons anywhere.
 >   - Right-click a beacon for bubble style and animations (**Skin**), sounds, and **Bots** → **Hide**.
 >   - Right-click → **Bots** → **Show or hide** is a checklist with Show all / Hide all, and double-clicking the tray icon pauses them all.
 >   - Hidden beacons still collect messages, and the tray icon shows a dot when something arrives.
-> - Prefer them tucked away? Drag or throw a beacon to the outer edge of your screen (or right-click → **Skin** → **All tabs**) and it becomes a tab. Click a tab for its card, click the grip for the whole shelf, drag a tab to any edge, and use the pencil to rename it or pick its picture, colour and sound.
+> - Prefer them tucked away? Drag or throw a beacon to the outer edge of your screen (or right-click → **Skin** → **All tabs**) and it becomes a tab. Click a tab for its card, click the grip for the whole shelf, drag a tab to any edge, and use the pencil to rename it or pick its picture (an animated GIF works too), colour and sound.
 
 ## Step 13: Tell the user it's all theirs to change
 
-Send this right after step 12's message (or as its last part, to save a message). Adjust the examples to the user's real bots:
+Send this right after step 12's message (or as its last part, to save a message), so also only after the ping test passed. Adjust the examples to the user's real bots:
 
 > One more thing: Bot Beacons is completely open to you. The full source is included, so I can rebuild and reinstall it whenever you like.
 > - **Looks:** any beacon can become anything at all: a different character, your own art, new animations.
@@ -213,6 +266,14 @@ Send this right after step 12's message (or as its last part, to save a message)
 > - "Use a softer sound for alerts and add a beacon for my new travel bot."
 
 When the user asks, follow "Customising and rebuilding" below.
+
+## Step 14: Show them what's possible
+
+Right after step 13 (it can be the same message), add one short friendly paragraph. Pick 2 or 3 ideas that suit the user and only offer what works today. For example:
+
+> This setup is just a starting point. A beacon doesn't have to be a bot: I can run a small script that puts the morning weather on one, lights another up when your build passes, or nudges you to drink water every couple of hours. I can also restyle any beacon to look like whatever you like. Want me to set one up or give one a new look?
+
+If they say yes, a script-driven beacon is just a scheduled script or routine on the box that runs `beaconctl.py send <id> "..."` (see [AGENT-GUIDE.md](AGENT-GUIDE.md); a new id asks the user to add its tab). For looks, follow "Customising and rebuilding" below. Anything that needs data from the PC itself, like CPU stats, needs an app change, so say so.
 
 ## Customising and rebuilding (when the user asks for changes)
 
@@ -234,9 +295,11 @@ The user can hide any beacon (right-click → **Bots** → **Hide**), or use rig
 | Symptom | Fix |
 |---|---|
 | `BC status` says not paired | Repeat step 7 (the user right-clicks → Bots → Re-pair) |
-| Sends work but replies never reach bots | The wake hook isn't set or the test failed: repeat step 8's message. Replies still wait safely, and `BC route` shows them. |
+| Sends work but replies and pings never reach bots | The wake hook isn't set, wasn't saved, or the routine is off: repeat step 8's message and its ping test. App 1.2.6+ shows **Wake hook… (not set)** in right-click → Bots, "wake hook not set" in the tray tooltip, and "Sent, but no wake hook" after a reply. Replies still wait safely, and `BC route` shows them (ids in `to_notify` were never passed on). |
 | A beacon doesn't appear | Its id isn't in `%APPDATA%\BotBeacons\beacons.json`, or it is hidden (right-click → Bots → Show or hide, or Pause is on) |
 | A message lands on the wrong beacon with the id in brackets | The id has no tab. With 1.2.5+, the user answered **Not now** to "New bot … wants a tab" (or the message wasn't signed through the relay). Restart the app and the bot's next message asks again. Or add the id to beacons.json with `make_beacons.py` and reinstall with `-BeaconsJson`. |
+| `probe FAILED after pairing` or `BC probe --retry` fails | Is the app running on the PC (tray icon)? Is the PC online? Wait a minute and run `BC probe --retry` again. Still failing: the app may be paired with an older code; ask the user to right-click → Bots → **Re-pair with bots…** and repeat step 7. |
+| `BC prefs` exits 2 | The app is older than 1.2.6 and ignores preferences (harmless). Update the app, or the user sets each tab's picture with the pencil. |
 | The pairing window doesn't show at login | Intended: autostart never pops the pairing window. Use right-click → Bots → Pair. |
 
 **Uninstall:** run `powershell -NoProfile -ExecutionPolicy Bypass -File "<setup folder>\src\tools\uninstall.ps1"` on the PC (add `-RemoveData` to delete settings and pairing). Then `BC unpair` on the box.

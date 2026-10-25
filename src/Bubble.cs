@@ -157,7 +157,7 @@ namespace BotBeacons
                 BeginInvoke((Action)(() =>
                 {
                     input.Enabled = true; send.Enabled = true;
-                    if (ok) { input.Text = ""; status.Text = "Sent (encrypted)."; }
+                    if (ok) { input.Text = ""; status.Text = Wake.SentStatus(owner.Def.Id, "Sent (encrypted)."); }   // 1.2.6: or "no wake hook"
                     else status.Text = "Send failed: " + err;
                     if (Form.ActiveForm == this) input.Focus();   // only if the user is still in the bubble
                 }));

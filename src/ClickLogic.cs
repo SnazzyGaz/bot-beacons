@@ -9,6 +9,7 @@ namespace BotBeacons
     // cursor went down, so the window bobbing, wandering or hopping under a still cursor never counts as a drag.
     public enum ClickVerdict { Click, Drag, Catch, TooLong, NoPress }
     public enum ClickAct { Open, Close, KeepOpen }
+    public enum PressKind { None, Left, Ping, Menu }   // 1.2.6: what each mouse button does on a beacon, tab or shelf row
 
     public static class ClickRules
     {
@@ -46,6 +47,26 @@ namespace BotBeacons
             if (!bubbleOpenAtDown) return ClickAct.Open;
             if (secondsSinceOpenClick >= 0 && secondsSinceOpenClick <= doubleClickSeconds) return ClickAct.KeepOpen;
             return ClickAct.Close;
+        }
+
+        // 1.2.6: left = click (open/close the card) or drag, as before; middle = ping the bot (same as the menu's Ping:
+        // throttle and wiggle included); right = the menu. Any other button does nothing.
+        public static PressKind ForButton(System.Windows.Forms.MouseButtons b)
+        {
+            if (b == System.Windows.Forms.MouseButtons.Left) return PressKind.Left;
+            if (b == System.Windows.Forms.MouseButtons.Middle) return PressKind.Ping;
+            if (b == System.Windows.Forms.MouseButtons.Right) return PressKind.Menu;
+            return PressKind.None;
+        }
+
+        // 1.2.6: does a middle-button release ping? Only if the press started on this window, the left button isn't held
+        // (no drag is going on) and the cursor stayed within the slop. A middle press never starts a drag or opens a card.
+        // 1.2.6: the hover hint on a floating beacon or a tab (shown after a pause; not while its card or bubble is open)
+        public static string HoverHint(string name) { return name + "\nClick: open   Middle-click: ping   Right-click: menu"; }
+
+        public static bool MiddlePing(bool pressedHere, bool leftHeld, double maxDist, int slop)
+        {
+            return pressedHere && !leftHeld && maxDist <= slop;
         }
     }
 

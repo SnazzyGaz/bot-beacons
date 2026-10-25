@@ -462,6 +462,7 @@ namespace BotBeacons
                 case "hover": return "What opens a tab's card: a click, or just hovering";
                 case "size:small": case "size:normal": case "size:large": return "Tab size";
                 case "more": return "More options";
+                case "row": return "Click: open   Middle-click: ping   Right-click: menu";   // 1.2.6
             }
             return "";
         }

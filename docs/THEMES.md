@@ -65,7 +65,54 @@ Overlays are drawn in the listed order on top of the base. The animation can mov
 | `test: true` | hidden unless tray → **Test beacons → Show test beacons** is on (the `echo` beacon) |
 | `sound` / `attentionSound` | optional WAV file names for its message and attention sounds (see **Sounds** below) |
 
-Leave the file's `"version"` alone. When an update ships a higher version, the app saves your file as `beacons.v<N>.bak.json` and installs the new default.
+Leave the file's `"version"` alone. See **Updates keep your theme** below for what happens when an update ships a newer built-in list.
+
+## Theme-wide options (1.2.6)
+
+Two optional top-level keys:
+
+```jsonc
+{
+  "version": 2,
+  "trayIcon": "my-tray.png",
+  "beaconWord": "companions",
+  "beacons": [ "..." ]
+}
+```
+
+| Key | Meaning |
+|---|---|
+| `trayIcon` | the notification-area icon: a plain file name (`.ico` or `.png`, up to 1 MB), looked up like art (`%APPDATA%\BotBeacons\art\`, then `art\` next to the exe, then the built-in art). A PNG is drawn at 32 × 32, so make it square. The unread dot and red "!" are drawn on it as usual. Missing or unreadable: the app's own icon. |
+| `beaconWord` | what the menus call your beacons, plural, 1–24 characters: **Pause companions (hide all)**, **Test companions**, **Show test companions**. Default `beacons`. |
+
+## Updates keep your theme (1.2.6)
+
+The file's `"version"` only changes when an update ships a new built-in list. Up to 1.2.5, that replaced your file with the new default (your old one was saved as `beacons.v<N>.bak.json`). From 1.2.6 your theme is **merged** instead:
+
+- Your file is still backed up first as `beacons.v<N>.bak.json`.
+- The app keeps a copy of the built-in list your file came from, `beacons.shipped.json`, so it can tell your edits from the defaults. It writes it itself; don't edit it.
+- Anything you changed stays as you made it. Anything you never touched takes the new default. Anything you deleted stays deleted. New settings are added.
+- A beacon's look (`art`, `alertArt`, `base`, `overlays`, `tint`, `eye`, `lamp` and their sizes and glows) moves as one: if you changed any part of it, none of the new look is taken, so a custom character never ends up with half a new body.
+- Beacons you added are kept as they are. New built-in beacons are added only if you kept all the old built-in ones (otherwise the app log says it skipped them).
+- If there is no `beacons.shipped.json` yet (a file from 1.2.5 or older, or one written by a bot), your beacons are kept exactly; only new top-level settings are added.
+- To keep your file exactly, version number aside, add `"upgrade": "keep"` at the top level.
+- If your file can't be read at all, the app falls back to the old behaviour (backup, then the new default).
+
+**Your changes in their own file (optional).** `%APPDATA%\BotBeacons\beacons.user.json` is laid over `beacons.json` every time the app starts, and the app never writes to it, so it survives anything. It takes the same keys: top-level keys replace those in beacons.json (blocks like `anim` are merged key by key), and beacons are matched by `id` and changed field by field. `{"id": "...", "remove": true}` removes one, and an unknown id adds a new beacon (give it everything a beacon entry needs). `version` is ignored. Example:
+
+```json
+{
+  "beaconWord": "helpers",
+  "trayIcon": "helper-tray.png",
+  "bubble": "cloud",
+  "beacons": [
+    { "id": "research", "name": "Owl", "overlays": ["owl-ears.png"] },
+    { "id": "echo", "remove": true }
+  ]
+}
+```
+
+If the overlay file can't be read, it is skipped (the app log says so) and beacons.json is used as is.
 
 ## Sounds
 
@@ -132,3 +179,5 @@ An accessory is just another overlay: draw it on the 150 × 190 canvas, put the 
 ## The Tabs skin (1.2.0)
 
 Right-click → **Skin** → **Tabs** shows each beacon as a tab on a screen edge instead of floating art. A tab's picture is, in order: the user's custom image (Edit tab → Custom image), else the bot's own profile picture (sent with `beaconctl.py avatar`, see AGENT-GUIDE.md), else the beacon's initials on its colour. The tab's colour strip is the beacon's `color` unless the user picked another. beacons.json needs nothing new; the user's edits live in `%APPDATA%\BotBeacons\tabs.json` and win over it. The floating beacon art (layers, `anim`, accessories) is untouched and is still what the Beacons skin shows. Since 1.2.1 the user picks the tab size (Small / Normal / Large). Send tab pictures square and at least 128 px so they stay sharp at Large.
+
+**Animated tab pictures (1.2.6).** A GIF picked as a tab's custom image (pencil → **Custom image**) keeps animating: up to 5 MB and 150 frames, centre-cropped to a square. It follows the Animations setting (Off: first frame only; Subtle: one loop, then an 8-second rest; Full: the GIF's own speed) and the frame-rate setting, and tabs redraw at most 25 times a second. The app keeps the file as `tabs\<id>.gif` next to `tabs\<id>.png` (its first frame, which older versions show). Bots' profile pictures (`beaconctl.py avatar`) stay still PNGs. Floating beacon art can't be a frame sequence or GIF; animate it with layers and the `anim` block.

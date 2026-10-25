@@ -83,7 +83,7 @@ namespace BotBeacons
             string name; if (!names.TryGetValue(id, out name)) name = NameFor(id, "");
             var u = new UserTab { Id = id, Name = name, Color = TabStore.Hex(ColorFor(id)), Purpose = "" };
             TabStore.Add(u);
-            if (System.IO.File.Exists(Avatars.PathFor(id))) { TabStore.Get(id).Image = "profile"; TabStore.Save(); }   // the bot's own picture
+            if (System.IO.File.Exists(Avatars.PathFor(id)) && TabPictures.Setting != "beacon") { TabStore.Get(id).Image = "profile"; TabStore.Save(); }   // the bot's own picture
             var b = Program.AddBeacon(TabStore.DefFor(u));
             Log.Write("New bot '" + id + "': tab added (" + q.Count + " message(s)).");
             foreach (var m in q) b.Notify(m);

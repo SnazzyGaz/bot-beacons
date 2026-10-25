@@ -1,5 +1,29 @@
 # Changelog
 
+## 1.2.6
+
+- **The app now tells you when the wake hook isn't set.** Without it, your replies and pings are saved on the relay, but no bot is woken, and until now nothing said so. While the app is paired and no wake hook is saved:
+  - the tray icon's tooltip ends in "wake hook not set",
+  - right-click → **Bots** shows **Wake hook… (not set)**,
+  - after you send a reply, the bubble or card says "Sent, but no wake hook: Bots → Wake hook…",
+  - one tray balloon, at most once per run (right after pairing, or on your first reply or ping), explains it. Clicking the balloon opens the Wake hook window.
+  Nothing pops up again after that, and it all goes away as soon as a hook is saved.
+- **Setup: the ping test is now required.** After the wake hook step, the setup bot asks you to ping its beacon (right-click → **Ping**) and checks that a bot was really woken and answered within about a minute. If not, it walks you through the wake hook again. The "Done!" message only comes after the test passes. When a bot resumes a half-finished setup, it always checks the wake hook with you, because the box can't see whether it is saved.
+- Docs: SETUP (step 8 "Ping test", resuming a setup, troubleshooting), README, AGENT-GUIDE, ROUTER and TECHNICAL updated. Ping wording updated for 1.2.3+ (right-click → Ping).
+
+Also in 1.2.6 (from a second round of user requests and community feedback):
+
+- **Middle-click to ping.** Middle-click a floating beacon, a tab or a shelf row to ping its bot: the same as right-click → **Ping** (same wiggle, same once-per-30-seconds limit). It never starts a drag or opens the card. The Ping menu item shows "Middle-click", and hovering a beacon or tab shows a short reminder of the clicks.
+- **Tab pictures choice.** Right-click → Layout → **Tab pictures**: **Bot's profile pictures** (tabs switch to a bot's picture when it sends one, and choosing it switches every tab that already has one), **Beacon pictures** (keep the beacon's picture), or **Choose per tab** (the default, as before). A tab with a custom image is never changed, and a newly arriving bot picture never overrides a picture you picked yourself in Edit. A setup bot can set it from the box after asking you: `beaconctl.py prefs tab-pictures profile|beacon|ask` (older apps simply ignore it, and beaconctl says so).
+- **Animated GIF tab pictures.** A GIF picked as a tab's custom image keeps moving (up to 5 MB and 150 frames). It follows Animations (Off: still; Subtle: one loop, then a rest; Full) and the frame-rate setting. Older versions show its first frame. Bot profile pictures stay still PNGs.
+- **Pairing checks itself.** `beaconctl.py pair` now probes the new link a few seconds after pairing (3 tries over about 45 seconds) and says whether it works. `beaconctl.py probe --retry` does the same at any time.
+- **Your theme survives updates.** When an update ships a new built-in beacon list, your beacons.json is merged instead of replaced: what you changed stays, what you never touched gets the new defaults, deletions stay deleted, and a customised look is never mixed with a new one. `"upgrade": "keep"` keeps your file exactly. The optional `beacons.user.json` holds your own changes in a file the app never writes. The backup is kept as before. (This release doesn't change the built-in list, so updating to 1.2.6 leaves your file alone.)
+- **Themes can set the tray icon and what beacons are called.** `"trayIcon": "file.ico"` or `.png` (looked up like art; falls back to the app icon) and `"beaconWord": "companions"` for the Pause and Test menu items.
+- **Docs:** a note that Bot Beacons needs the Grok Bot desktop app (Grok in X DMs or the web/X chat can't install anything on your PC), the Tab pictures step in SETUP step 9, pairing's self-check in step 7, middle-click in step 12, and THEMES (tray icon, beaconWord, animated tab pictures, how updates keep your theme).
+- **Docs: a linked bot sets it up, and the reply hook is never skipped.** SETUP and README now tell a bot that's given this link to do the whole setup now (release with checksum, install, pair, beacons, reply hook and routine, profile-picture tabs, end-to-end ping test), asking the user only for what only they can do. The reply hook (router routine plus the app's wake hook) is marked required everywhere, with why. Setup counts as done only after a ping is answered on a beacon. AGENT-GUIDE says the same. Setup now sets Tab pictures to the bots' profile pictures by default.
+- **Docs: "Make it yours".** README has a new section with ideas for beacons beyond bots (weather, build watcher, GitHub stars, focus and water nudges) and what you could fork. SETUP step 14 has the setup bot offer a script-driven or restyled beacon once setup works.
+- Removed a stray test file from the repository; `tools/update_fixtures.py` no longer treats a flag as its output folder.
+
 ## 1.2.5
 
 First public release of the Tabs skin. It includes everything from 1.1.4 to 1.1.6 and the 1.2.0 to 1.2.4 test builds below.

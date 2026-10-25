@@ -61,7 +61,7 @@ namespace BotBeacons
             object v; string s;
             var t = Read(FilePath);
             if (t != null && t.TryGetValue("bubble", out v) && (s = Valid(v)) != null) return s;
-            var k = Read(BeaconConfig.FilePath);
+            var k = BeaconConfig.Root ?? Read(BeaconConfig.FilePath);   // 1.2.6: Root includes beacons.user.json
             if (k != null && k.TryGetValue("bubble", out v) && (s = Valid(v)) != null) return s;
             return "card";
         }

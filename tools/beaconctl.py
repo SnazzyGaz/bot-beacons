@@ -3,8 +3,16 @@
 
   beaconctl.py pair CODE [--name NAME] [--wait S]  one-time pairing with the code shown on the PC (waits until it expires)
   beaconctl.py status                       is a link set up (never prints keys or topics)
-  beaconctl.py probe [--wait S]             silent health check: the PC app (1.1.3+) answers with a signed ack,
-                                           shows nothing on any beacon. Exit 0 = OK, 1 = no answer within S s (default 30)
+  beaconctl.py pair CODE ... [--no-probe]   1.2.6: after pairing, probes the link (3 tries over ~45 s) and prints
+                                           "probe OK" or "probe FAILED"; pairing itself succeeded either way (exit 0)
+  beaconctl.py probe [--wait S] [--retry [N]]  silent health check: the PC app (1.1.3+) answers with a signed ack,
+                                           shows nothing on any beacon. Exit 0 = OK, 1 = no answer within S s (default 30).
+                                           --retry: up to N attempts (default 3) of 15 s each before reporting failure
+  beaconctl.py prefs tab-pictures profile|beacon|ask
+                                           1.2.6: set the user's tab-picture choice on the PC (signed, silent).
+                                           profile = each tab shows the bot's profile picture once sent (custom images
+                                           are kept), beacon = the beacon art, ask = per tab (default).
+                                           Exit 0 = applied, 2 = app older than 1.2.6 (nothing changed), 1 = no answer
   beaconctl.py send BEACON TEXT [--title T]  send an encrypted, signed message that pops up on beacon BEACON.
                                            TEXT "-" reads stdin. One message must fit in 3900 bytes once encrypted:
                                            about 2,700 plain English characters, about 900 for Chinese/Japanese, 680 emoji.
@@ -240,6 +248,14 @@ def cmd_pair(a):
             post(server, rv, json.dumps({"t": "ack", "env": ack}), time.time() + 120)
             _write_secret(LINK, json.dumps(link)); _write_secret(SEEN, "{}"); _write_secret(CURSOR, json.dumps({"since": int(time.time()), "handled": {}}))
             print("Paired. Secure link saved (keys stay in the secrets folder).")
+            if a.no_probe: return
+            # 1.2.6: check the new link end to end. The app reconnects its relay right after pairing, so the first
+            # probe can be missed; try up to 3 times over ~45 s before calling it a failure. Pairing itself has succeeded.
+            time.sleep(3)
+            k, secs, n = _probe(None, 3, 15)
+            if k: print(f"probe OK: app v{k.get('ver', '?')} answered in {secs:.0f} s")
+            else: print(f"probe FAILED after pairing: no answer after {n} attempts in {secs:.0f} s ({PROBE_FAIL}). "
+                        "The link is saved; run  beaconctl.py probe --retry  once the app is running.")
             return
         time.sleep(5)   # gentle on ntfy's per-IP limit
     sys.exit("The PC didn't confirm before the code expired. On the PC, right-click a beacon > Re-pair with bots... for a new code "
@@ -251,25 +267,60 @@ def cmd_status(a):
     l = json.load(open(LINK))
     print(f"Paired since {time.strftime('%Y-%m-%d %H:%M %Z', time.localtime(l['paired']/1000))}; relay {l['server']}.")
 
-def cmd_probe(a):
-    """silent health check: send kind "probe" (log-only on the PC), wait for the app's signed ack.
-    Real replies fetched while waiting go into the inbox as usual, so the router and bots still see them."""
+def _probe(prefs=None, tries=1, per=30):
+    """send kind "probe" (log-only on the PC) and wait up to PER s for the app's signed ack; up to TRIES attempts,
+    each a new probe (the app answers at most one probe per 5 s). An ack for any of them counts.
+    PREFS (1.2.6) rides in the probe's "prefs" field: older apps ack and ignore it, 1.2.6+ apply it and echo "applied".
+    Real replies fetched while waiting go into the inbox as usual, so the router and bots still see them.
+    Returns (ack, seconds, attempts) or (None, seconds, attempts)."""
     l = load_link()
-    pid = secrets.token_hex(12)
-    p = {"id": pid, "ts": now_ms(), "from": "bot", "bot": "", "kind": "probe", "text": ""}
-    deadline = time.time() + max(5, a.wait)
-    post(l["server"], l["down"], seal(l["key"], B2P, p), deadline)
-    t0 = time.time()
-    while time.time() < deadline:
-        time.sleep(3)
-        with _Lock():
-            b, bad = sync_inbox()
-        for k in PROBE_ACKS:
-            if k.get("re") == pid:
-                print(f"probe OK: app v{k.get('ver', '?')} answered in {time.time() - t0:.0f} s (nothing shown on the desktop)")
-                return
-    print(f"probe FAILED: no answer within {a.wait} s (app closed, PC asleep or offline, relay down, or app older than 1.1.3)")
+    pids = set(); t0 = time.time()
+    for n in range(1, max(1, tries) + 1):
+        pid = secrets.token_hex(12); pids.add(pid)
+        p = {"id": pid, "ts": now_ms(), "from": "bot", "bot": "", "kind": "probe", "text": ""}
+        if prefs: p["prefs"] = prefs
+        deadline = time.time() + max(5, per)
+        post(l["server"], l["down"], seal(l["key"], B2P, p), deadline)
+        while time.time() < deadline:
+            time.sleep(3)
+            with _Lock():
+                b, bad = sync_inbox()
+            for k in PROBE_ACKS:
+                if k.get("re") in pids: return k, time.time() - t0, n
+        if n < tries: print(f"probe: no answer yet (attempt {n}/{tries}); trying again...", file=sys.stderr)
+    return None, time.time() - t0, max(1, tries)
+
+PROBE_FAIL = "app closed, PC asleep or offline, relay down, or app older than 1.1.3"
+
+def cmd_probe(a):
+    """silent health check. --retry [N]: up to N attempts (default 3) of --wait s each (default 15 with --retry)"""
+    tries = a.retry or 1
+    per = a.wait if a.wait else (15 if a.retry else 30)
+    k, secs, n = _probe(None, tries, per)
+    if k:
+        print(f"probe OK: app v{k.get('ver', '?')} answered in {secs:.0f} s (nothing shown on the desktop)"); return
+    print(f"probe FAILED: no answer after {n} attempt(s) in {secs:.0f} s ({PROBE_FAIL})")
     sys.exit(1)
+
+def _ver(v):
+    try: return tuple(int(x) for x in str(v).split(".")[:3])
+    except Exception: return (0,)
+
+def cmd_prefs(a):
+    """1.2.6: set a preference on the PC app from the bot (signed, in a probe). Exit 0 = applied, 2 = app too old, 1 = no answer"""
+    key = {"tab-pictures": "tabPictures"}[a.name]
+    want = f"{key}={a.value}"
+    k, secs, n = _probe(want, 3, 15)
+    if not k:
+        print(f"prefs FAILED: no answer after {n} attempt(s) in {secs:.0f} s ({PROBE_FAIL})"); sys.exit(1)
+    applied = k.get("applied")
+    if applied is None or _ver(k.get("ver")) < (1, 2, 6):
+        print(f"prefs NOT APPLIED: app v{k.get('ver', '?')} is older than 1.2.6 and ignores preferences. "
+              "Ask the user to update, or to set it by hand (tab pencil > tab image).")
+        sys.exit(2)
+    if str(applied).startswith("rejected"):
+        print(f"prefs NOT APPLIED: the app said {applied}"); sys.exit(1)
+    print(f"prefs OK: {applied} applied by app v{k.get('ver', '?')} (nothing shown on the desktop)")
 
 def cmd_send(a):
     bot = getattr(a, "as_", None) or a.bot
@@ -601,9 +652,11 @@ def cmd_unpair(a):
 def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     sp = ap.add_subparsers(dest="cmd", required=True)
-    p = sp.add_parser("pair"); p.add_argument("code"); p.add_argument("--name", default="Grok Bot"); p.add_argument("--wait", type=int, default=0, help="seconds to wait for the PC (default: until the code expires)"); p.add_argument("--server", default=DEFAULT_SERVER); p.set_defaults(f=cmd_pair)
+    p = sp.add_parser("pair"); p.add_argument("code"); p.add_argument("--name", default="Grok Bot"); p.add_argument("--wait", type=int, default=0, help="seconds to wait for the PC (default: until the code expires)"); p.add_argument("--server", default=DEFAULT_SERVER); p.add_argument("--no-probe", action="store_true", help="don't check the link after pairing"); p.set_defaults(f=cmd_pair)
     sp.add_parser("status").set_defaults(f=cmd_status)
-    p = sp.add_parser("probe"); p.add_argument("--wait", type=int, default=30); p.set_defaults(f=cmd_probe)
+    p = sp.add_parser("probe"); p.add_argument("--wait", type=int, default=0, help="seconds per attempt (default 30; 15 with --retry)")
+    p.add_argument("--retry", type=int, nargs="?", const=3, default=0, metavar="N", help="up to N attempts (default 3, ~45 s)"); p.set_defaults(f=cmd_probe)
+    p = sp.add_parser("prefs"); p.add_argument("name", choices=["tab-pictures"]); p.add_argument("value", choices=["profile", "beacon", "ask"]); p.set_defaults(f=cmd_prefs)
     for name in ("send", "notify"):
         p = sp.add_parser(name); p.add_argument("bot", nargs="?"); p.add_argument("text"); p.add_argument("--as", dest="as_", metavar="BEACON")
         p.add_argument("--title"); p.add_argument("--re"); p.add_argument("--name", help="your bot's name, for the new-tab prompt"); p.set_defaults(f=cmd_send)

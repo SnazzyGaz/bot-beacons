@@ -175,6 +175,7 @@ namespace BotBeacons
             string relay = Program.RelayState;
             if (Program.PairingActive && tip.Length + 12 <= 63) tip += " - pairing\u2026";
             else if (relay != "connected" && tip.Length + relay.Length + 9 <= 63) tip += " - relay " + relay;
+            else if (Settings.Link.Valid && !Wake.AnySet && tip.Length + 20 <= 63) tip += " - wake hook not set";   // 1.2.6
             if (tip.Length > 63) tip = tip.Substring(0, 62) + "\u2026";
             if (tip != lastTip) { Tray.Text = tip; lastTip = tip; }
         }

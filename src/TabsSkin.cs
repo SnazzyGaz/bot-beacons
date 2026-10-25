@@ -69,7 +69,7 @@ namespace BotBeacons
             var d = B.Def; bool att = B.Attention, unread = B.Unread.Count > 0;
             var edge = Dragging ? DragEdge : Edge;
             string sig = edge + "|" + (int)Math.Round(DepthNow) + "|" + att + "|" + unread + "|" + Hot + "|" + Dragging + "|" + TabStore.Version + "|" + Avatars.Version + "|" + d.Name + "|" + (att ? (int)(pulse * 8) : 0)
-                + "|" + (Dragging ? DragAt.ToString() : Slot.Location.ToString()) + "|" + TabLayout.Scale;
+                + "|" + (Dragging ? DragAt.ToString() : Slot.Location.ToString()) + "|" + TabLayout.Scale + "|" + TabStore.FrameTag(d);   // 1.2.6: an animated picture's frame
             if (!force && sig == lastSig) return;
             lastSig = sig;
             var look = new TabRender.TabLook { Image = TabStore.ImageFor(d), Color = TabStore.ColorFor(d), Attention = att, Unread = unread, Count = B.Unread.Count, Hot = Hot, Ghost = Dragging, Depth = DepthNow, Pulse = pulse };
@@ -85,12 +85,24 @@ namespace BotBeacons
         protected override void OnMouseDown(MouseEventArgs e)
         {
             base.OnMouseDown(e);
-            if (e.Button == MouseButtons.Left) { down = true; downAt = Cursor.Position; }
+            if (e.Button == MouseButtons.Left) { down = true; downAt = Cursor.Position; midDown = false; }
+            else if (e.Button == MouseButtons.Middle) { midDown = !down && !Dragging; midAt = Cursor.Position; midMax = 0; }   // 1.2.6
         }
+        bool midDown; Point midAt; double midMax;
+        ToolTip hint;   // 1.2.6: "Click: open, Middle-click: ping" after a pause (not in hover-open mode: the card opens instead)
+        protected override void OnMouseEnter(EventArgs e)
+        {
+            base.OnMouseEnter(e);
+            if (TabsSkin.HoverOpens || Dragging) { if (hint != null) hint.SetToolTip(this, null); return; }
+            if (hint == null) hint = new ToolTip { InitialDelay = 900, ReshowDelay = 300, AutoPopDelay = 5000, ShowAlways = true };   // the tab never takes activation
+            hint.SetToolTip(this, ClickRules.HoverHint(B.Def.Name));
+        }
+        protected override void OnHandleDestroyed(EventArgs e) { if (hint != null) { hint.Dispose(); hint = null; } base.OnHandleDestroyed(e); }
         protected override void OnMouseMove(MouseEventArgs e)
         {
             base.OnMouseMove(e);
             var c = Cursor.Position;
+            if (midDown) midMax = Math.Max(midMax, Math.Sqrt((double)(c.X - midAt.X) * (c.X - midAt.X) + (double)(c.Y - midAt.Y) * (c.Y - midAt.Y)));
             if (Dragging) { TabsSkin.DragPoll(); return; }
             if (down && (Math.Abs(c.X - downAt.X) > 6 || Math.Abs(c.Y - downAt.Y) > 6)) { down = false; TabsSkin.BeginDrag(this); }
         }
@@ -104,6 +116,11 @@ namespace BotBeacons
                 else if (was) TabsSkin.TabClicked(this);
             }
             else if (e.Button == MouseButtons.Right && !Dragging) TabsSkin.ShowBeaconMenu(this, B, Cursor.Position);
+            else if (ClickRules.ForButton(e.Button) == PressKind.Ping)
+            {
+                bool ping = ClickRules.MiddlePing(midDown, down || Dragging, midMax, 6); midDown = false;
+                if (ping) B.PingClick();   // 1.2.6: middle-click pings the tab's bot (the card stays as it is)
+            }
         }
         // capture loss no longer ends a drag (1.2.0 did, at whatever spot the cursor had then): the drag loop sees the release
     }
@@ -234,7 +251,9 @@ namespace BotBeacons
         {
             base.OnMouseDown(e);
             if (e.Button == MouseButtons.Left) { down = true; downAt = Cursor.Position; downHit = HitAt(downAt); }
+            else if (e.Button == MouseButtons.Middle) { midHit = down ? null : HitAt(Cursor.Position); midAt = Cursor.Position; }   // 1.2.6
         }
+        TabRender.Hit midHit; Point midAt;
         protected override void OnMouseUp(MouseEventArgs e)
         {
             base.OnMouseUp(e);
@@ -244,6 +263,14 @@ namespace BotBeacons
             {
                 bool was = down; down = false;
                 if (was && h != null && downHit != null && HotKey(h) == HotKey(downHit)) TabsSkin.ShelfAction(this, h, c);
+            }
+            else if (ClickRules.ForButton(e.Button) == PressKind.Ping)
+            {
+                // 1.2.6: middle-click on a bot's row pings that bot (released on the same row, without moving away)
+                var h0 = midHit; midHit = null;
+                double dist = Math.Sqrt((double)(c.X - midAt.X) * (c.X - midAt.X) + (double)(c.Y - midAt.Y) * (c.Y - midAt.Y));
+                if (h0 != null && h != null && h0.Action == "row" && h.Action == "row" && h0.Id == h.Id && ClickRules.MiddlePing(true, down, dist, 6))
+                { var b = Program.Find(h.Id); if (b != null) b.PingClick(); }
             }
             else if (e.Button == MouseButtons.Right)
             {

@@ -161,7 +161,26 @@ namespace BotBeacons
                 }
                 if (reason != null) { Rejected++; Log.Write("Rejected relay message " + nid + ": " + reason); continue; }
                 // 1.1.3: a silent health probe (beaconctl probe). Log-only: no bubble, glow, sound or wake; answered with a signed ack
-                if (Crypto.Str(p, "kind") == "probe") { SendProbeAck(Crypto.Str(p, "id")); continue; }
+                // 1.2.6: a probe may carry "prefs" (beaconctl prefs). Older apps ack it and ignore the field; this one checks
+                // it against a whitelist, applies it on the UI thread and says so in the ack's "applied" field.
+                if (Crypto.Str(p, "kind") == "probe")
+                {
+                    string prefs = Crypto.Str(p, "prefs"), applied = null;
+                    if (prefs.Length > 0)
+                    {
+                        var want = new Dictionary<string, string>();
+                        string bad = TabPictures.ParsePrefs(prefs, want);
+                        if (bad != null) { applied = "rejected: " + bad; Log.Write("Probe prefs rejected (" + bad + ")."); }
+                        else
+                        {
+                            var parts = new List<string>(); foreach (var kv in want) parts.Add(kv.Key + "=" + kv.Value);
+                            applied = string.Join(";", parts.ToArray());
+                            var ph = PrefsArrived; if (ph != null) ph(want);
+                        }
+                    }
+                    SendProbeAck(Crypto.Str(p, "id"), applied);
+                    continue;
+                }
                 // 1.2.0: a bot's profile picture, in chunks (beaconctl avatar). Silent: stored for the Tabs skin, nothing shown or played
                 if (Crypto.Str(p, "kind") == "avatar") { Log.Write("Relay: " + Avatars.Receive(p) + "."); continue; }
                 var m = new PetMessage { Id = Crypto.Str(p, "id"), Bot = Crypto.Str(p, "bot"), Title = Crypto.Str(p, "title"), Text = Crypto.Str(p, "text"), Kind = Crypto.Str(p, "kind"), AgentId = Crypto.Str(p, "agent"), BotName = Crypto.Str(p, "name"), Verified = true };   // reason == null: Crypto.Open + CheckFresh passed
@@ -220,10 +239,11 @@ namespace BotBeacons
         // 1.1.3: answer a probe with a signed "probe-ack" on the reply channel. beaconctl and the router skip acks, and
         // nothing is queued for the wake hook. At most one ack per 5 s, so a flood of probes can't flood the relay.
         static DateTime lastAck = DateTime.MinValue;
-        static void SendProbeAck(string probeId)
+        public static event Action<Dictionary<string, string>> PrefsArrived;   // 1.2.6, relay thread
+        static void SendProbeAck(string probeId, string applied)
         {
-            if ((DateTime.Now - lastAck).TotalSeconds < 5) { Log.Write("Probe received (silent); ack skipped (rate limit)."); return; }
-            lastAck = DateTime.Now;
+            if ((DateTime.Now - lastAck).TotalSeconds < 5 && applied == null) { Log.Write("Probe received (silent); ack skipped (rate limit)."); return; }
+            if (applied == null) lastAck = DateTime.Now;   // a prefs answer doesn't hold back the next plain probe
             Log.Write("Probe received (silent); sending ack.");
             ThreadPool.QueueUserWorkItem(_ =>
             {
@@ -233,6 +253,7 @@ namespace BotBeacons
                     var payload = new Dictionary<string, object> {
                         { "id", Crypto.Hex(Crypto.Random(12)) }, { "ts", Crypto.NowMs() }, { "from", "app" },
                         { "bot", "" }, { "text", "" }, { "re", probeId ?? "" }, { "kind", "probe-ack" }, { "ver", Program.Version } };
+                    if (applied != null) payload["applied"] = applied;
                     Http.Post(link.Server, link.Up, Crypto.Seal(link.Key, Crypto.PetToBot, payload));
                     Log.Write("Probe ack sent.");
                 }

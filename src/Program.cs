@@ -12,7 +12,7 @@ namespace BotBeacons
 {
     static class Program
     {
-        public const string Version = "1.2.5";
+        public const string Version = "1.2.6";
         public static readonly List<BeaconForm> Beacons = new List<BeaconForm>();
         static Relay relay;
         static NotifyIcon tray;
@@ -80,11 +80,13 @@ namespace BotBeacons
 
                 tray = new NotifyIcon();
                 try { tray.Icon = Icon.ExtractAssociatedIcon(Application.ExecutablePath); } catch { tray.Icon = SystemIcons.Application; }
+                var themed = BeaconConfig.TrayIcon();   // 1.2.6: the theme's "trayIcon" (the badges are drawn on it too)
+                if (themed != null) { tray.Icon = themed; Log.Write("Tray icon from the theme (" + BeaconConfig.RootStr("trayIcon") + ")."); }
                 tray.Text = "Bot Beacons";
                 tray.ContextMenuStrip = BuildMenu(null);
                 tray.Visible = true;
                 TrayBadge.Init(tray, tray.Icon);
-                tray.BalloonTipClicked += (s, e) => { if (Updater.Available != null) Updater.UpdateNow(); };   // 1.2.3
+                tray.BalloonTipClicked += (s, e) => { if (balloonKind == "wake") OpenWakeForm(); else if (Updater.Available != null) Updater.UpdateNow(); };   // 1.2.3 (1.2.6: the wake hook balloon opens its dialog)
                 // left click: open the first visible beacon with news (or show a hidden one that has some); double-click:
                 // pause/resume all beacons. The single click waits out the double-click time so a double-click doesn't also open a bubble.
                 var clickWait = new System.Windows.Forms.Timer { Interval = Math.Max(200, SystemInformation.DoubleClickTime) };
@@ -93,8 +95,12 @@ namespace BotBeacons
                 tray.MouseDoubleClick += (s, e) => { if (e.Button == MouseButtons.Left) { clickWait.Stop(); Visibility.SetPaused(!Visibility.Paused); } };
 
                 relay = new Relay();
-                Pairing.Paired += () => relay.Kick();   // drop the stream on the old link and connect with the new one
+                Pairing.Paired += () => { relay.Kick(); WakeNotSet(true); };   // drop the stream on the old link and connect with the new one (1.2.6: then say if the wake hook is missing)
                 relay.MessageArrived += m => main.BeginInvoke((Action)(() => Route(m)));
+                // 1.2.6: a profile picture arrived / a bot set the tab-pictures preference (both raised on the relay thread)
+                Avatars.Saved += id => { try { main.BeginInvoke((Action)(() => TabPictures.AvatarArrived(id))); } catch { } };
+                Relay.PrefsArrived += d => { try { main.BeginInvoke((Action)(() => { string v; if (d.TryGetValue("tabPictures", out v)) TabPictures.Choose(v, "set by a bot"); })); } catch { } };
+                TabPictures.Changed += () => TabsSkin.Changed();
                 // a second launch: just note it (no window, no focus change)
                 ThreadPool.RegisterWaitForSingleObject(second, (st, to) => Log.Write("A second copy was started and exited; this one keeps running."), null, -1, false);
                 // screens may still be settling right after sign-in: re-fit saved positions when the layout changes
@@ -122,11 +128,29 @@ namespace BotBeacons
             }
         }
 
-        // 1.2.3: a tray balloon (updates)
-        public static void Balloon(string title, string text, ToolTipIcon icon)
+        // 1.2.3: a tray balloon (updates; 1.2.6: also the one-time wake hook note). kind decides what a click on it does.
+        static string balloonKind = "";
+        public static void Balloon(string title, string text, ToolTipIcon icon, string kind = "update")
         {
             if (tray == null) return;
+            balloonKind = kind;
             try { tray.ShowBalloonTip(8000, title, text, icon); } catch { }
+        }
+
+        // 1.2.6: paired but no wake hook saved: replies and pings wait on the relay and no bot is woken. One balloon per run
+        // at most (right after pairing, or on the first reply or ping); after that only the tray tooltip and the send status say so.
+        static bool wakeWarned;
+        public static void WakeNotSet(bool afterPairing = false)
+        {
+            if (wakeWarned || !Settings.Link.Valid || Wake.AnySet || Beacons.Count == 0) return;
+            var ui = Beacons[0];
+            if (ui.InvokeRequired || !ui.IsHandleCreated) { try { ui.BeginInvoke((Action)(() => WakeNotSet(afterPairing))); } catch { } return; }
+            if (wakeWarned || Wake.AnySet) return;
+            wakeWarned = true;
+            Log.Write("Wake hook not set: " + (afterPairing ? "noted after pairing" : "a reply or ping was sent with no wake") + " (balloon shown once).");
+            Balloon(afterPairing ? "Paired. One more step: the wake hook" : "Wake hook not set",
+                afterPairing ? "Set the wake hook so replies and pings wake your bots: right-click > Bots > Wake hook\u2026 (or click here)." : Wake.NotSetLong + " Click here to set it.",
+                ToolTipIcon.Info, "wake");
         }
 
         // tray tooltip (max 63 chars): relay state
@@ -234,7 +258,7 @@ namespace BotBeacons
                 var reply = new ToolStripMenuItem("Reply to " + from.Def.Name + "\u2026", null, (s, e) => from.OpenBubble(true)) { ToolTipText = "Open " + from.Def.Name + "'s conversation" };
                 reply.Font = new Font(reply.Font, FontStyle.Bold);
                 m.Items.Add(reply);
-                m.Items.Add("Ping " + from.Def.Name, null, (s, e) => from.PingClick());
+                m.Items.Add(new ToolStripMenuItem("Ping " + from.Def.Name, null, (s, e) => from.PingClick()) { ShortcutKeyDisplayString = "Middle-click" });   // 1.2.6
                 opening.Add(() => reply.Text = (from.Unread.Count > 0 ? "Reply to " + from.Def.Name + "  (" + from.Unread.Count + " unread)" : "Reply to " + from.Def.Name) + "\u2026");
             }
             else
@@ -311,9 +335,18 @@ namespace BotBeacons
             // 1.2.3: throw a floating beacon at an outer screen edge and it docks there as a tab
             var thr = new ToolStripMenuItem("Throw to dock", null, (s, e) => TabsSkin.SetThrowToDock(!TabsSkin.ThrowToDock)) { ToolTipText = "Fling a floating beacon at the outer edge of a screen and it becomes a tab there" };
             var shelf = new ToolStripMenuItem("Open the whole shelf", null, (s, e) => TabsSkin.OpenWholeShelf(from != null && Skin.IsTab(from) ? from : null));   // 1.2.1
-            layout.DropDownItems.Add(size); layout.DropDownItems.Add(hov); layout.DropDownItems.Add(thr);
-            layout.DropDownItems.Add(new ToolStripSeparator()); layout.DropDownItems.Add(shelf);
-            layout.DropDownOpening += (s, e) => { thr.Checked = TabsSkin.ThrowToDock; shelf.Visible = Skin.AnyTabs; layout.DropDownItems[3].Visible = Skin.AnyTabs; };
+            // 1.2.6: one choice for every tab's picture (settings.ini tabPictures; a bot can set it with beaconctl prefs)
+            var pics = new ToolStripMenuItem("Tab pictures") { ToolTipText = "Which picture tabs show. A tab set to a custom image keeps it." };
+            foreach (var pv in new[] { "profile", "beacon", "ask" })
+            {
+                var k = pv;
+                pics.DropDownItems.Add(new ToolStripMenuItem(k == "profile" ? "Bot's profile pictures (when sent)" : k == "beacon" ? "Beacon pictures" : "Choose per tab (default)", null, (s, e) => TabPictures.Choose(k, "menu")) { Tag = k });
+            }
+            pics.DropDownOpening += (s, e) => { foreach (ToolStripMenuItem it in pics.DropDownItems) it.Checked = (string)it.Tag == TabPictures.Setting; };
+            var shelfSep = new ToolStripSeparator();
+            layout.DropDownItems.Add(size); layout.DropDownItems.Add(hov); layout.DropDownItems.Add(thr); layout.DropDownItems.Add(pics);
+            layout.DropDownItems.Add(shelfSep); layout.DropDownItems.Add(shelf);
+            layout.DropDownOpening += (s, e) => { thr.Checked = TabsSkin.ThrowToDock; shelf.Visible = Skin.AnyTabs; shelfSep.Visible = Skin.AnyTabs; };
             m.Items.Add(layout);
 
             // ---- Sounds ▸
@@ -350,19 +383,19 @@ namespace BotBeacons
                     vis.DropDownItems.Add("Show all", null, (s2, e2) => Visibility.SetAll(false));
                     vis.DropDownItems.Add("Hide all", null, (s2, e2) => Visibility.SetAll(true));
                 }
-                else vis.DropDownItems.Add(new ToolStripMenuItem("(paused: untick Pause beacons to show them)") { Enabled = false });
+                else vis.DropDownItems.Add(new ToolStripMenuItem("(paused: untick Pause " + BeaconConfig.Word + " to show them)") { Enabled = false });
             };
             fillVis();
             vis.DropDownOpening += (s, e) => fillVis();
             botsM.DropDownItems.Add(vis);
-            var pause = new ToolStripMenuItem("Pause beacons (hide all)", null, (s, e) => Visibility.SetPaused(!Visibility.Paused));
+            var pause = new ToolStripMenuItem("Pause " + BeaconConfig.Word + " (hide all)", null, (s, e) => Visibility.SetPaused(!Visibility.Paused));
             botsM.DropDownItems.Add(pause);
             // test beacons: the main switch, then a one-by-one checklist (used while the switch is on)
-            var testMenu = new ToolStripMenuItem("Test beacons");
+            var testMenu = new ToolStripMenuItem("Test " + BeaconConfig.Word);
             Action fillTest = () =>
             {
                 ClearItems(testMenu.DropDownItems);
-                var showTest = new ToolStripMenuItem("Show test beacons") { Checked = ShowTest };
+                var showTest = new ToolStripMenuItem("Show test " + BeaconConfig.Word) { Checked = ShowTest };
                 showTest.Click += (s2, e2) => SetShowTest(!ShowTest);
                 testMenu.DropDownItems.Add(showTest);
                 testMenu.DropDownItems.Add(new ToolStripSeparator());
@@ -380,12 +413,14 @@ namespace BotBeacons
             botsM.DropDownItems.Add(new ToolStripSeparator());
             var pairItem = new ToolStripMenuItem("Pair with bots\u2026", null, (s, e) => StartPairing());
             botsM.DropDownItems.Add(pairItem);
-            botsM.DropDownItems.Add("Wake hook\u2026", null, (s, e) => OpenWakeForm());
+            var wakeItem = new ToolStripMenuItem("Wake hook\u2026", null, (s, e) => OpenWakeForm());
+            botsM.DropDownItems.Add(wakeItem);
             botsM.DropDownItems.Add("Open settings folder", null, (s, e) => { try { System.Diagnostics.Process.Start(Settings.Dir); } catch { } });
             botsM.DropDownOpening += (s, e) =>
             {
                 pause.Checked = Visibility.Paused;
                 pairItem.Text = Settings.Link.Valid ? "Re-pair with bots\u2026" : "Pair with bots\u2026";
+                wakeItem.Text = Settings.Link.Valid && !Wake.AnySet ? "Wake hook\u2026 (not set)" : "Wake hook\u2026";   // 1.2.6
                 if (from != null) { bool t = Skin.IsTab(from); editTab.Visible = t; hideIt.Text = "Hide " + from.Def.Name + (t ? " (tab)" : ""); }
             };
             m.Items.Add(botsM);
@@ -638,6 +673,7 @@ namespace BotBeacons
                 else if (cmd == "shelf" && sk != null) TabsSkin.DevOpenShelf(sk);
                 else if (cmd == "card" && sk != null) TabsSkin.DevOpenCard(sk);
                 else if (cmd == "openshelf") TabsSkin.OpenWholeShelf(null);
+                else if (cmd == "tabpictures" && parts.Length > 1) TabPictures.Choose(parts[1].Trim(), "dev hook");   // 1.2.6
                 else if (cmd == "tabsize" && parts.Length > 1) TabsSkin.SetSize(parts[1].Trim().ToLowerInvariant());
                 else if ((cmd == "tabopen" || cmd == "tabhover") && parts.Length > 1) TabsSkin.SetOpen(parts[1].Trim().ToLowerInvariant());   // 1.2.2: tabopen click|hover
                 else if (cmd == "edittab" && sk != null) TabsSkin.Edit(sk, Rectangle.Empty);

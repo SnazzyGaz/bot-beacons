@@ -132,7 +132,7 @@ namespace BotBeacons
             var mine = new PetMessage { Id = "", Bot = Def.Id, Text = text, FromUser = true };
             AddHistory(mine);
             if (bubble != null && !bubble.IsDisposed) bubble.Refresh2();
-            Relay.SendReply(Def.Id, text, LastIncomingId, (ok, err) => { if (!ok) mine.Title = "not sent: " + err; if (done != null) done(ok, err); });
+            Relay.SendReply(Def.Id, text, LastIncomingId, (ok, err) => { if (!ok) mine.Title = "not sent: " + err; else if (!Wake.Covers(Def.Id)) Program.WakeNotSet(); if (done != null) done(ok, err); });
         }
 
         // opening the bubble reads the normal messages; a pending attention call stays (badge + pulse) until resolved
@@ -182,6 +182,17 @@ namespace BotBeacons
 
         // Clicking a beacon that isn't glowing pings it: a short wiggle as feedback, and (at most once per 30 s) a ping
         // up the relay plus a wake, like a reply. The owning bot answers on the beacon, which then glows as usual.
+        bool midDown; Point midAt; double midMax;   // 1.2.6: middle-button press (ping)
+        ToolTip hint;   // 1.2.6: "Click: open, Middle-click: ping" after a pause, not while the bubble is open
+        protected override void OnMouseEnter(EventArgs e)
+        {
+            base.OnMouseEnter(e);
+            if (sim) return;
+            bool open = bubble != null && !bubble.IsDisposed && bubble.Visible;
+            if (open) { if (hint != null) hint.SetToolTip(this, null); return; }
+            if (hint == null) hint = new ToolTip { InitialDelay = 1200, ReshowDelay = 400, AutoPopDelay = 5000, ShowAlways = true };   // the beacon never takes activation
+            hint.SetToolTip(this, ClickRules.HoverHint(Def.Name));
+        }
         public void PingClick()
         {
             double t = clock.Elapsed.TotalSeconds;
@@ -209,7 +220,7 @@ namespace BotBeacons
             var mine = new PetMessage { Id = "", Bot = Def.Id, Text = "Ping", Kind = "ping", FromUser = true };
             AddHistory(mine);
             if (bubble != null && !bubble.IsDisposed) bubble.Refresh2();
-            Relay.SendPing(Def.Id, (ok, err) => { if (!ok) mine.Title = "not sent: " + err; if (done != null) done(ok, err); });
+            Relay.SendPing(Def.Id, (ok, err) => { if (!ok) mine.Title = "not sent: " + err; else if (!Wake.Covers(Def.Id)) Program.WakeNotSet(); if (done != null) done(ok, err); });
         }
 
         // Open this beacon's bot chat in the Grok Bot app (grokbot:// agent deep link), else just bring the app forward.
@@ -793,6 +804,7 @@ namespace BotBeacons
         protected override void Dispose(bool disposing)
         {
             if (disposing && menu != null) { menu.Dispose(); menu = null; }
+            if (disposing && hint != null) { hint.Dispose(); hint = null; }
             for (int i = 0; i < alertCache.Length; i++) if (alertCache[i] != null) { alertCache[i].Dispose(); alertCache[i] = null; }
             if (fg != null) { fg.Dispose(); fg = null; }
             if (frame != null) { frame.Dispose(); frame = null; }
@@ -855,7 +867,14 @@ namespace BotBeacons
         protected override void OnMouseDown(MouseEventArgs e)
         {
             base.OnMouseDown(e);
+            if (e.Button == MouseButtons.Middle && !sim)   // 1.2.6: middle-click pings; never a drag, never the bubble
+            {
+                midDown = !leftDown; midAt = Cursor.Position; midMax = 0;
+                if (midDown) Capture = true;
+                return;
+            }
             if (e.Button != MouseButtons.Left || sim) return;
+            midDown = false;   // a left press cancels a middle press in progress
             // Was the bubble open when this click started? Clicking the beacon can deactivate the bubble (it closes as
             // "clicked away") just before the click lands; without this the click would reopen it at once.
             // 1.2.4: only a bubble that is open right now. The beacon never takes activation (MA_NOACTIVATE), so clicking it
@@ -874,12 +893,21 @@ namespace BotBeacons
         protected override void OnMouseMove(MouseEventArgs e)
         {
             base.OnMouseMove(e);
+            if (midDown) { var c = Cursor.Position; double dd = Math.Sqrt((double)(c.X - midAt.X) * (c.X - midAt.X) + (double)(c.Y - midAt.Y) * (c.Y - midAt.Y)); if (dd > midMax) midMax = dd; }
             if (!sim) PointerMove(Cursor.Position, clock.Elapsed.TotalSeconds);
         }
         protected override void OnMouseUp(MouseEventArgs e)
         {
             base.OnMouseUp(e);
             if (sim) return;
+            if (ClickRules.ForButton(e.Button) == PressKind.Ping)
+            {
+                bool ping = ClickRules.MiddlePing(midDown, leftDown, midMax, ClickSlop);
+                midDown = false; if (!leftDown) Capture = false;
+                ClickLog.Write(Def.Id + " middle up, moved " + midMax.ToString("0.0", System.Globalization.CultureInfo.InvariantCulture) + " px: " + (ping ? "ping" : "ignored") + ".");
+                if (ping) PingClick();
+                return;
+            }
             if (e.Button == MouseButtons.Left)
             {
                 if (!leftDown)

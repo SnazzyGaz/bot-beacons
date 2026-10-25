@@ -43,31 +43,63 @@ namespace BotBeacons
             try { var r = new JavaScriptSerializer().DeserializeObject(text) as Dictionary<string, object>; return Convert.ToInt32(r["version"]); } catch { return 0; }
         }
 
-        public static List<BeaconDef> Load()
+        public static string ShippedPath { get { return Path.Combine(Settings.Dir, "beacons.shipped.json"); } }   // 1.2.6: the built-in list the user's file came from
+        public static string OverridePath { get { return Path.Combine(Settings.Dir, "beacons.user.json"); } }    // 1.2.6: optional, never written by the app
+        public static Dictionary<string, object> Root;   // 1.2.6: the loaded theme (beacons.json + beacons.user.json)
+
+        static Dictionary<string, object> Parse(string text) { return new JavaScriptSerializer().DeserializeObject(text) as Dictionary<string, object>; }
+
+        public static List<BeaconDef> Load() { return Load(true); }
+        static List<BeaconDef> Load(bool useOverride)
         {
             string text = null;
             try { if (File.Exists(FilePath)) text = File.ReadAllText(FilePath); } catch { }
+            string emb = ReadEmbedded("beacons.json");
+            int want = Version(emb);
             if (text != null)
             {
-                // a newer built-in beacon list replaces an older copied one (the old file is kept as a backup)
-                string emb = ReadEmbedded("beacons.json");
-                int have = Version(text), want = Version(emb);
+                // a newer built-in beacon list: 1.2.6 merges it into the user's file (ThemeMerge: the user's changes are
+                // kept), with the old file kept as beacons.vN.bak.json as before. 1.2.5 and older replaced the file.
+                int have = Version(text);
                 if (want > have)
                 {
-                    try { File.Copy(FilePath, Path.Combine(Settings.Dir, "beacons.v" + have + ".bak.json"), true); File.WriteAllText(FilePath, emb); } catch { }
-                    Log.Write("beacons.json upgraded from version " + have + " to " + want + " (old copy kept).");
-                    text = emb;
+                    string bak = Path.Combine(Settings.Dir, "beacons.v" + have + ".bak.json");
+                    try { File.Copy(FilePath, bak, true); } catch { }
+                    try
+                    {
+                        Dictionary<string, object> oldBase = null;
+                        try { if (File.Exists(ShippedPath)) { string bt = File.ReadAllText(ShippedPath); if (Version(bt) == have) oldBase = Parse(bt); } } catch { }
+                        var notes = new List<string>();
+                        var merged = ThemeMerge.Upgrade(Parse(text), oldBase, Parse(emb), notes);
+                        text = ThemeMerge.Pretty(merged);
+                        WriteAtomic(FilePath, text);
+                        Log.Write("beacons.json upgraded from version " + have + " to " + want + ", your changes kept (" + (oldBase != null ? "merged with the old built-in list" : "no old built-in list: your values kept, missing ones filled in") + (notes.Count > 0 ? "; " + string.Join("; ", notes.ToArray()) : "") + "). Old copy: " + Path.GetFileName(bak) + ".");
+                    }
+                    catch (Exception ex)
+                    {
+                        // the user's file can't be read as JSON: the 1.2.5 behaviour (the old file is in the backup)
+                        try { File.WriteAllText(FilePath, emb); } catch { }
+                        Log.Write("beacons.json upgraded from version " + have + " to " + want + " (it could not be merged: " + ex.Message + "; old copy kept as " + Path.GetFileName(bak) + ").");
+                        text = emb;
+                    }
                 }
             }
             if (text == null)
             {
-                text = ReadEmbedded("beacons.json");
+                text = emb;
                 try { File.WriteAllText(FilePath, text); } catch { }
             }
+            // remember which built-in list this file matches, so the next version bump can tell the user's edits apart
+            if (Version(text) == want)
+                try { if (!File.Exists(ShippedPath) || File.ReadAllText(ShippedPath) != emb) WriteAtomic(ShippedPath, emb); } catch { }
             var list = new List<BeaconDef>();
             try
             {
-                var root = new JavaScriptSerializer().DeserializeObject(text) as Dictionary<string, object>;
+                var root = Parse(text);
+                if (useOverride && File.Exists(OverridePath))
+                    try { root = ThemeMerge.Overlay(root, Parse(File.ReadAllText(OverridePath))); Log.Write("beacons.user.json applied over beacons.json."); }
+                    catch (Exception ex) { Log.Write("beacons.user.json could not be read (" + ex.Message + "); ignored."); }
+                Root = root;
                 object ta; root.TryGetValue("anim", out ta);
                 AnimSpec.Theme = AnimSpec.Parse(ta as Dictionary<string, object>, null);
                 var arr = root["beacons"] as object[];
@@ -94,8 +126,96 @@ namespace BotBeacons
                 }
             }
             catch (Exception ex) { Log.Write("beacons.json could not be read: " + ex.Message); }
-            if (list.Count == 0) { Log.Write("No valid beacons in beacons.json; using the built-in default."); File.Delete(FilePath); return Load(); }
+            if (list.Count == 0 && useOverride && File.Exists(OverridePath)) { Log.Write("No valid beacons with beacons.user.json; loading without it."); return Load(false); }
+            if (list.Count == 0) { Log.Write("No valid beacons in beacons.json; using the built-in default."); File.Delete(FilePath); return Load(false); }
             return list;
+        }
+
+        static void WriteAtomic(string path, string text)
+        {
+            string tmp = path + ".tmp";
+            File.WriteAllText(tmp, text);
+            if (File.Exists(path)) File.Delete(path);
+            File.Move(tmp, path);
+        }
+
+        // 1.2.6: theme-level options (top level of beacons.json / beacons.user.json)
+        public static string RootStr(string key)
+        {
+            object v; return Root != null && Root.TryGetValue(key, out v) && v is string ? ((string)v).Trim() : "";
+        }
+
+        // "beaconWord": the plural word the menus use ("Pause beacons", "Test beacons"); default "beacons"
+        public static string Word
+        {
+            get
+            {
+                string w = RootStr("beaconWord");
+                if (w.Length == 0 || w.Length > 24) return "beacons";
+                foreach (char c in w) if (char.IsControl(c)) return "beacons";
+                return w;
+            }
+        }
+        public static string WordCap { get { string w = Word; return char.ToUpper(w[0]) + w.Substring(1); } }
+
+        // "trayIcon": an .ico or .png for the tray, looked up like art (%APPDATA%\BotBeacons\art, art\ next to the exe,
+        // inside the exe). null = not set or not loadable (the caller keeps the exe's icon).
+        public static Icon TrayIcon()
+        {
+            string name = RootStr("trayIcon");
+            if (name.Length == 0) return null;
+            if (name.IndexOfAny(Path.GetInvalidFileNameChars()) >= 0) { Log.Write("trayIcon: '" + name + "' is not a plain file name; using the app icon."); return null; }
+            try
+            {
+                byte[] data = null;
+                foreach (var dir in new[] { Path.Combine(Settings.Dir, "art"), Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "art") })
+                {
+                    string p = Path.Combine(dir, name);
+                    if (File.Exists(p)) { data = File.ReadAllBytes(p); break; }
+                }
+                if (data == null)
+                    using (var st = typeof(BeaconConfig).Assembly.GetManifestResourceStream(name))
+                        if (st != null) { var ms = new MemoryStream(); st.CopyTo(ms); data = ms.ToArray(); }
+                if (data == null) { Log.Write("trayIcon: '" + name + "' not found; using the app icon."); return null; }
+                if (data.Length > 1024 * 1024) { Log.Write("trayIcon: '" + name + "' is over 1 MB; using the app icon."); return null; }
+                if (data.Length > 4 && data[0] == 0 && data[1] == 0 && data[2] == 1 && data[3] == 0)
+                {
+                    try { using (var ms = new MemoryStream(data)) return new Icon(ms, 32, 32); }
+                    catch { byte[] png = IcoPngEntry(data); if (png == null) throw; data = png; }   // some GDI+ builds can't read PNG-compressed entries
+                }
+                using (var ms = new MemoryStream(data))
+                using (var src = new Bitmap(ms))
+                using (var bmp = new Bitmap(32, 32, PixelFormat.Format32bppArgb))
+                {
+                    using (var g = Graphics.FromImage(bmp))
+                    {
+                        g.InterpolationMode = InterpolationMode.HighQualityBicubic; g.PixelOffsetMode = PixelOffsetMode.HighQuality; g.Clear(Color.Transparent);
+                        float k = Math.Min(32f / src.Width, 32f / src.Height); float w = src.Width * k, h = src.Height * k;
+                        g.DrawImage(src, (32 - w) / 2, (32 - h) / 2, w, h);
+                    }
+                    IntPtr hi = bmp.GetHicon();
+                    using (var tmp = Icon.FromHandle(hi)) { var copy = (Icon)tmp.Clone(); try { DestroyIcon(hi); } catch { } return copy; }
+                }
+            }
+            catch (Exception ex) { Log.Write("trayIcon: '" + name + "' could not be loaded (" + ex.Message + "); using the app icon."); return null; }
+        }
+        [DllImport("user32.dll")] static extern bool DestroyIcon(IntPtr h);
+
+        // the PNG-compressed entry of an .ico closest to 32 px (at least 32 if there is one), or null
+        static byte[] IcoPngEntry(byte[] d)
+        {
+            int n = BitConverter.ToUInt16(d, 4), best = -1, bestW = 0;
+            for (int i = 0; i < n && 6 + 16 * i + 16 <= d.Length; i++)
+            {
+                int w = d[6 + 16 * i]; if (w == 0) w = 256;
+                int size = BitConverter.ToInt32(d, 6 + 16 * i + 8), off = BitConverter.ToInt32(d, 6 + 16 * i + 12);
+                if (off < 0 || size < 8 || off + size > d.Length || d[off] != 0x89 || d[off + 1] != (byte)'P') continue;
+                bool better = best < 0 || (bestW < 32 ? w > bestW : w >= 32 && w < bestW);
+                if (better) { best = i; bestW = w; }
+            }
+            if (best < 0) return null;
+            int o = BitConverter.ToInt32(d, 6 + 16 * best + 12), s = BitConverter.ToInt32(d, 6 + 16 * best + 8);
+            var r = new byte[s]; Array.Copy(d, o, r, 0, s); return r;
         }
 
         static PointF Pt(Dictionary<string, object> o, string k, PointF def)

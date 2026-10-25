@@ -1,6 +1,7 @@
 // 1.2.4 harness: floating-beacon click rules (jitter, a moving window, long presses, catches, double-clicks), the
 // solid hit pad, the shelf's dialog hold (focus to our own window never collapses it), the grouped shelf header,
 // and "every alert path sets the visual state" (real BeaconForms, headless; Visibility.ApplyHook records shows).
+// 1.2.6: middle-click ping (pure rules; with `alerts`, real beacons and a tab) and the Tab pictures choice / prefs whitelist.
 // Build (from the repo root; NoTaskbar.Hook needs SetWindowLong, which mono lacks, so a scratch copy drops it):
 //   d=$(mktemp -d); cp src/*.cs $d/; cp tools/MonoCngStub.cs.txt $d/CngStub.cs; cp tools/ClickHarness.cs.txt $d/ClickHarness.cs
 //   sed -i 's/NoTaskbar.Hook(new ContextMenuStrip())/new ContextMenuStrip()/' $d/*.cs
@@ -16,6 +17,8 @@ using System.Drawing.Imaging;
 using System.IO;
 using System.Linq;
 using System.Runtime.InteropServices;
+using MouseButtons = System.Windows.Forms.MouseButtons; using MouseEventArgs = System.Windows.Forms.MouseEventArgs;
+using Control = System.Windows.Forms.Control; using Form = System.Windows.Forms.Form;
 
 namespace BotBeacons
 {
@@ -208,7 +211,8 @@ namespace BotBeacons
             Check(TabRender.TipFor("speaker", new TabRender.ShelfModel { Sounds = "custom", Volume = "loud" }).Contains("loud"), "speaker tip shows the volume");
             foreach (var a in new[] { "skin", "hover", "more", "size:small" }) Check(TabRender.TipFor(a, null).Length > 0, a + " has a tip");
 
-            if (args.Length > 0 && args[0] == "alerts") { Alerts(); FloatBadge(); NewBotTests(); }
+            PureMiddleAndPictures();
+            if (args.Length > 0 && args[0] == "alerts") { Alerts(); FloatBadge(); NewBotTests(); MouseTests(); TabPictureTests(); GifTests(); }
             Console.WriteLine(bad == 0 ? "ALL OK (" + ok + " checks)" : bad + " FAILED, " + ok + " ok");
             return bad == 0 ? 0 : 1;
         }
@@ -352,6 +356,186 @@ namespace BotBeacons
         // ---------------- 1.2.5: bots create their own tabs. A signed relay message (Verified) for an id with no beacon asks
         // "New bot X wants a tab. Add / Not now"; nothing else ever asks (unsigned / local / user / bad id), duplicates queue,
         // Add puts the kept message(s) on the new tab, Not now falls back as before and doesn't re-ask this run.
+        // ---------------- 1.2.6: middle-click pings; tab pictures follow the user's one choice; bot-set prefs are whitelisted
+        static void PureMiddleAndPictures()
+        {
+            Check(ClickRules.ForButton(MouseButtons.Left) == PressKind.Left, "left = click/drag (unchanged)");
+            Check(ClickRules.ForButton(MouseButtons.Middle) == PressKind.Ping, "middle = ping");
+            Check(ClickRules.ForButton(MouseButtons.Right) == PressKind.Menu, "right = menu");
+            Check(ClickRules.ForButton(MouseButtons.XButton1) == PressKind.None && ClickRules.ForButton(MouseButtons.None) == PressKind.None, "other buttons do nothing");
+            Check(ClickRules.MiddlePing(true, false, 0, 7), "middle press + release in place pings");
+            Check(ClickRules.MiddlePing(true, false, 7, 7), "middle within the slop pings");
+            Check(!ClickRules.MiddlePing(true, false, 7.5, 7), "middle that wandered past the slop: nothing (and never a drag)");
+            Check(!ClickRules.MiddlePing(false, false, 0, 7), "middle release without its press here: nothing");
+            Check(!ClickRules.MiddlePing(true, true, 0, 7), "middle while the left button is held (dragging): nothing");
+            Check(ClickRules.HoverHint("Robot").Contains("Middle-click: ping") && ClickRules.HoverHint("Robot").StartsWith("Robot"), "hover hint names middle-click");
+            Check(TabRender.TipFor("row", null).Contains("Middle-click"), "shelf row tip names middle-click");
+
+            Check(TabPictures.Norm("PROFILE") == "profile" && TabPictures.Norm("beacon") == "beacon" && TabPictures.Norm("") == "ask" && TabPictures.Norm("junk") == "ask", "tabPictures: unknown values read as ask (default)");
+            Check(TabPictures.OnAvatar("ask", "beacon", false) == "beacon", "ask: an arriving picture changes nothing (1.2.5 behaviour)");
+            Check(TabPictures.OnAvatar("beacon", "beacon", false) == "beacon", "beacon: stays beacon");
+            Check(TabPictures.OnAvatar("profile", "beacon", false) == "profile", "profile: an arriving picture switches the tab");
+            Check(TabPictures.OnAvatar("profile", "custom", false) == "custom" && TabPictures.OnAvatar("profile", "custom", true) == "custom", "custom is never overridden by an arriving picture");
+            Check(TabPictures.OnAvatar("profile", "beacon", true) == "beacon", "a tab the user set by hand keeps the user's pick");
+            Check(TabPictures.OnChoose("profile", "beacon", true) == "profile" && TabPictures.OnChoose("profile", "beacon", false) == "beacon", "choose profile: tabs with a picture switch now, the rest when it arrives");
+            Check(TabPictures.OnChoose("beacon", "profile", true) == "beacon", "choose beacon: back to the art");
+            Check(TabPictures.OnChoose("beacon", "custom", true) == "custom" && TabPictures.OnChoose("profile", "custom", true) == "custom", "choosing never overrides custom");
+            Check(TabPictures.OnChoose("ask", "profile", true) == "profile" && TabPictures.OnChoose("ask", "beacon", true) == "beacon", "choose per tab: leaves tabs as they are");
+            var d = new Dictionary<string, string>();
+            Check(TabPictures.ParsePrefs("tabPictures=profile", d) == null && d["tabPictures"] == "profile", "prefs: tabPictures=profile");
+            d.Clear(); Check(TabPictures.ParsePrefs(" tabPictures = Beacon ;", d) == null && d["tabPictures"] == "beacon", "prefs: spaces, case, trailing ;");
+            // animated tab pictures: frame timing per animation mode and frame-rate setting
+            var dl = new[] { 100, 200, 100 };
+            Check(TabGif.FrameAt(dl, 50, AnimMode.Full) == 0 && TabGif.FrameAt(dl, 150, AnimMode.Full) == 1 && TabGif.FrameAt(dl, 350, AnimMode.Full) == 2 && TabGif.FrameAt(dl, 450, AnimMode.Full) == 0, "GIF Full: frames follow the delays and loop");
+            Check(TabGif.FrameAt(dl, 150, AnimMode.Off) == 0 && TabGif.FrameAt(dl, 350, AnimMode.Off) == 0, "GIF Off: the first frame only");
+            Check(TabGif.FrameAt(dl, 150, AnimMode.Subtle) == 1 && TabGif.FrameAt(dl, 450, AnimMode.Subtle) == 0 && TabGif.FrameAt(dl, 5000, AnimMode.Subtle) == 0 && TabGif.FrameAt(dl, 400 + 8000 + 150, AnimMode.Subtle) == 1, "GIF Subtle: one loop, then an 8 s rest on the first frame");
+            Check(TabGif.FrameAt(new[] { 100 }, 50, AnimMode.Full) == 0 && TabGif.FrameAt(null, 50, AnimMode.Full) == 0, "a one-frame GIF is a still");
+            Check(TabGif.MinDelay(60) == 20 && TabGif.MinDelay(30) == 34 && TabGif.MinDelay(25) == 40 && TabGif.MinDelay(0) == 40, "shortest frame: one frame at the fps setting, never under 20 ms");
+            var cl = TabGif.Clamp(new[] { 10, 20, 500, 999999 }, 30);
+            Check(cl[0] == 34 && cl[1] == 34 && cl[2] == 500 && cl[3] == 60000, "delays clamped to the frame rate (and 60 s at most)");
+            foreach (var bad in new[] { "", "tabPictures=custom", "tabPictures", "skin=tabs", "tabPictures=profile;wake=x", new string('a', 300), "=profile" })
+            { d.Clear(); Check(TabPictures.ParsePrefs(bad, d) != null, "prefs rejected: '" + (bad.Length > 30 ? bad.Substring(0, 30) + "..." : bad) + "'"); }
+        }
+
+        static T Field<T>(object o, string name) { return (T)o.GetType().GetField(name, System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance).GetValue(o); }
+        static void SetField(object o, string name, object v) { o.GetType().GetField(name, System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance).SetValue(o, v); }
+        static void Mouse(Control c, string what, MouseButtons b)
+        {
+            var m = typeof(Control).GetMethod("OnMouse" + what, System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance);
+            m.Invoke(c, new object[] { new MouseEventArgs(b, 1, 10, 10, 0) });
+        }
+        static bool BubbleOpen(BeaconForm b) { var bb = Field<object>(b, "bubble") as Form; return bb != null && !bb.IsDisposed && bb.Visible; }
+
+        // real BeaconForms / TabWindows under xvfb: middle-click pings (wiggle + 30 s throttle), never drags or opens
+        static void MouseTests()
+        {
+            var robot = Program.Find("robot"); var cat = Program.Find("cat");
+            foreach (var b in Program.Beacons) { b.ResolveAttention("harness"); b.Unread.Clear(); }
+            int clicks0 = robot.ClickCount;
+            Mouse(robot, "Down", MouseButtons.Middle); Mouse(robot, "Up", MouseButtons.Middle);
+            Check(Field<double>(robot, "lastPingAt") > -1000 && Field<double>(robot, "wiggleAmp") == 11, "floating beacon: middle-click pings (full wiggle)");
+            Check(robot.ClickCount == clicks0, "floating beacon: middle-click is not a (left) click");
+            Check(!Field<bool>(robot, "leftDown") && !Field<bool>(robot, "dragging") && !BubbleOpen(robot), "floating beacon: middle-click starts no drag and opens no bubble");
+            double first = Field<double>(robot, "lastPingAt");
+            Mouse(robot, "Down", MouseButtons.Middle); Mouse(robot, "Up", MouseButtons.Middle);
+            Check(Field<double>(robot, "lastPingAt") == first && Field<double>(robot, "wiggleAmp") == 4, "second middle-click within 30 s: throttled (small wiggle, no ping)");
+            // a glowing beacon: middle pings and leaves the message unread; left opens the bubble as before
+            var route = typeof(Program).GetMethod("Route", System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Static);
+            route.Invoke(null, new object[] { new PetMessage { Id = "mc1", Bot = "cat", Text = "hello" } });
+            Mouse(cat, "Down", MouseButtons.Middle); Mouse(cat, "Up", MouseButtons.Middle);
+            Check(Field<double>(cat, "wiggleAmp") == 11 && cat.Unread.Count == 1 && !BubbleOpen(cat), "glowing beacon: middle-click pings, the message stays unread, no bubble");
+            SetField(cat, "lastPingAt", -1000.0);
+            Mouse(cat, "Down", MouseButtons.Middle); SetField(cat, "midMax", 30.0); Mouse(cat, "Up", MouseButtons.Middle);
+            Check(Field<double>(cat, "lastPingAt") == -1000.0, "middle press that moved 30 px: no ping");
+            Mouse(cat, "Up", MouseButtons.Middle);
+            Check(Field<double>(cat, "lastPingAt") == -1000.0, "middle release without a press: no ping");
+            int catClicks = cat.ClickCount;
+            Mouse(cat, "Down", MouseButtons.Left); Mouse(cat, "Up", MouseButtons.Left);
+            Check(cat.ClickCount == catClicks + 1 && Field<double>(cat, "lastPingAt") == -1000.0, "left click is still a click (opens the conversation) and doesn't ping");
+            cat.DismissFromBubble();
+            // a tab
+            SetField(robot, "lastPingAt", -1000.0);
+            var tab = new TabWindow(robot);
+            Mouse(tab, "Down", MouseButtons.Middle); Mouse(tab, "Up", MouseButtons.Middle);
+            Check(Field<double>(robot, "lastPingAt") > -1000 && !tab.Dragging && !Field<bool>(tab, "down"), "tab: middle-click pings its bot, no drag");
+            SetField(robot, "lastPingAt", -1000.0);
+            Mouse(tab, "Down", MouseButtons.Left); Mouse(tab, "Down", MouseButtons.Middle); Mouse(tab, "Up", MouseButtons.Middle);
+            Check(Field<double>(robot, "lastPingAt") == -1000.0, "tab: middle while the left button is down: no ping");
+            SetField(tab, "down", false);
+            tab.Dispose();
+        }
+
+        // the setting, the menu path (TabPictures.Choose) and an arriving profile picture, on real beacons
+        static void TabPictureTests()
+        {
+            var robot = Program.Find("robot"); var cat = Program.Find("cat"); var echo = Program.Find("echo");
+            Directory.CreateDirectory(Path.GetDirectoryName(Avatars.PathFor("robot")));
+            using (var bmp = new Bitmap(64, 64)) { bmp.Save(Avatars.PathFor("robot"), ImageFormat.Png); }
+            if (File.Exists(Avatars.PathFor("cat"))) File.Delete(Avatars.PathFor("cat"));
+            TabStore.Get("echo").Image = "custom";
+            Check(TabPictures.Setting == "ask", "default tabPictures = ask");
+            TabPictures.AvatarArrived("robot");
+            Check(TabStore.Get("robot").Image == "beacon", "ask: robot's picture arriving leaves the tab on the beacon art");
+            int v0 = TabStore.Version;
+            TabPictures.Choose("profile", "harness");
+            Check(Settings.Get("tabPictures", "") == "profile", "Choose writes settings.ini tabPictures");
+            Check(TabStore.Get("robot").Image == "profile" && TabStore.Get("cat").Image == "beacon" && TabStore.Get("echo").Image == "custom", "Choose profile: robot (has a picture) switches, cat waits, custom kept");
+            Check(TabStore.Version > v0, "the tabs redraw (TabStore.Version bumped)");
+            using (var bmp = new Bitmap(64, 64)) { bmp.Save(Avatars.PathFor("cat"), ImageFormat.Png); }
+            TabPictures.AvatarArrived("cat");
+            Check(TabStore.Get("cat").Image == "profile", "profile: cat's picture arrives -> cat switches automatically");
+            TabStore.Get("cat").Image = "beacon"; TabStore.Get("cat").ImageBy = "user"; TabStore.Save();
+            TabPictures.AvatarArrived("cat");
+            Check(TabStore.Get("cat").Image == "beacon", "a tab the user set by hand isn't switched by a re-sent picture");
+            typeof(TabStore).GetField("prefs", System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Static).SetValue(null, null);   // reload tabs.json
+            Check(TabStore.Get("cat").ImageBy == "user" && TabStore.Get("robot").ImageBy == "", "imageBy survives tabs.json save/load");
+            TabPictures.Choose("beacon", "harness");
+            Check(TabStore.Get("robot").Image == "beacon" && TabStore.Get("cat").Image == "beacon" && TabStore.Get("echo").Image == "custom" && TabStore.Get("cat").ImageBy == "", "Choose beacon: all non-custom tabs back to the art, the hand-set mark cleared");
+            TabPictures.Choose("ask", "harness");
+            Check(TabPictures.Setting == "ask" && TabStore.Get("robot").Image == "beacon", "Choose per tab: nothing changes");
+            TabStore.Get("echo").Image = "beacon"; TabStore.Save();
+        }
+
+        // a GIF89a writer for the tests (uncompressed LZW: 7-bit codes, a clear code every 120 pixels)
+        static byte[] Gif(int w, int h, int[] delaysCs, Func<int, int, int, int> px)
+        {
+            var o = new MemoryStream(); Action<int> u16 = v => { o.WriteByte((byte)(v & 255)); o.WriteByte((byte)(v >> 8)); };
+            var hdr = System.Text.Encoding.ASCII.GetBytes("GIF89a"); o.Write(hdr, 0, 6); u16(w); u16(h); o.WriteByte(0xF6); o.WriteByte(0); o.WriteByte(0);
+            for (int i = 0; i < 128; i++) { o.WriteByte((byte)(i * 2)); o.WriteByte((byte)(255 - i * 2)); o.WriteByte((byte)((i * 37) & 255)); }
+            var ns = new byte[] { 0x21, 0xFF, 0x0B }; o.Write(ns, 0, 3); var nb = System.Text.Encoding.ASCII.GetBytes("NETSCAPE2.0"); o.Write(nb, 0, 11); o.WriteByte(3); o.WriteByte(1); u16(0); o.WriteByte(0);
+            for (int f = 0; f < delaysCs.Length; f++)
+            {
+                o.WriteByte(0x21); o.WriteByte(0xF9); o.WriteByte(4); o.WriteByte(0); u16(delaysCs[f]); o.WriteByte(0); o.WriteByte(0);
+                o.WriteByte(0x2C); u16(0); u16(0); u16(w); u16(h); o.WriteByte(0); o.WriteByte(7);
+                var codes = new List<int>(); int run = 0;
+                codes.Add(128);
+                for (int y = 0; y < h; y++) for (int x = 0; x < w; x++) { if (run == 120) { codes.Add(128); run = 0; } codes.Add(px(f, x, y) & 127); run++; }
+                codes.Add(129);
+                var bytes = new List<byte>(); int acc = 0, nbits = 0;
+                foreach (var c in codes) { acc |= c << nbits; nbits += 8; while (nbits >= 8) { bytes.Add((byte)(acc & 255)); acc >>= 8; nbits -= 8; } }
+                if (nbits > 0) bytes.Add((byte)acc);
+                for (int i = 0; i < bytes.Count; i += 255) { int n = Math.Min(255, bytes.Count - i); o.WriteByte((byte)n); for (int j = 0; j < n; j++) o.WriteByte(bytes[i + j]); }
+                o.WriteByte(0);
+            }
+            o.WriteByte(0x3B); return o.ToArray();
+        }
+
+        // a custom animated GIF on a real tab: import, frames, the redraw tag, Off/Full, a still replacing it, limits
+        static void GifTests()
+        {
+            var robot = Program.Find("robot"); string tmp = Path.GetTempFileName() + ".gif";
+            File.WriteAllBytes(tmp, Gif(40, 30, new[] { 10, 20, 1 }, (f, x, y) => f * 40 + (x / 10)));
+            using (var im = Image.FromFile(tmp)) { Check(TabGif.FrameCount(im) == 3, "test GIF has 3 frames"); var d = TabGif.Delays(im, 3); Check(d[0] == 100 && d[1] == 200 && d[2] == 100, "GIF delays read (0/1 cs = 100 ms): " + string.Join(",", d)); }
+            Check(TabStore.ImportCustom("robot", tmp) == null, "animated GIF imports");
+            Check(File.Exists(TabGif.PathFor("robot")) && File.Exists(TabStore.CustomPath("robot")), "kept as tabs\\robot.gif plus the first frame as tabs\\robot.png (older versions show that)");
+            var p = TabStore.Get("robot"); p.Image = "custom"; TabStore.Save();
+            var saved = AnimSettings.Mode;
+            AnimSettings.Mode = AnimMode.Off;
+            Check(TabStore.FrameTag(robot.Def) == "f0", "Animations Off: the first frame");
+            var f0 = TabStore.ImageFor(robot.Def);
+            Check(f0 != null && f0.Width == 96, "ImageFor gives a 96 px frame");
+            AnimSettings.Mode = AnimMode.Full;
+            var seen = new HashSet<string>(); var sw = System.Diagnostics.Stopwatch.StartNew();
+            while (sw.ElapsedMilliseconds < 1200) { seen.Add(TabStore.FrameTag(robot.Def)); System.Threading.Thread.Sleep(15); }
+            Check(seen.Contains("f0") && seen.Contains("f1") && seen.Contains("f2"), "Animations Full: the tab cycles through every frame (" + string.Join(",", seen) + ")");
+            File.SetLastWriteTimeUtc(TabStore.CustomPath("robot"), DateTime.UtcNow.AddMinutes(1));
+            Check(TabStore.FrameTag(robot.Def) == "", "a newer still (picked in an older version) wins over the leftover GIF");
+            File.SetLastWriteTimeUtc(TabStore.CustomPath("robot"), DateTime.UtcNow.AddMinutes(-1));
+            Check(TabStore.FrameTag(robot.Def).StartsWith("f"), "and the GIF animates again when it is the newer one");
+            AnimSettings.Mode = saved;
+            p.Image = "beacon"; TabStore.Save();
+            Check(TabStore.FrameTag(robot.Def) == "" && TabStore.ImageFor(robot.Def) != null, "tab not on custom: no animation");
+            using (var bmp = new Bitmap(20, 20)) bmp.Save(tmp + ".png", ImageFormat.Png);
+            Check(TabStore.ImportCustom("robot", tmp + ".png") == null && !File.Exists(TabGif.PathFor("robot")), "a still picture replaces the GIF (tabs\\robot.gif removed)");
+            File.WriteAllBytes(tmp, Gif(4, 4, Enumerable.Repeat(5, TabGif.MaxFrames + 1).ToArray(), (f, x, y) => f & 127));
+            string err = TabStore.ImportCustom("robot", tmp);
+            Check(err != null && err.Contains("frames") && !File.Exists(TabGif.PathFor("robot")), "a GIF over " + TabGif.MaxFrames + " frames is refused: " + err);
+            File.WriteAllBytes(tmp, Gif(8, 8, new[] { 10 }, (f, x, y) => x));
+            Check(TabStore.ImportCustom("robot", tmp) == null && !File.Exists(TabGif.PathFor("robot")), "a one-frame GIF is imported as a still");
+            TabStore.Reset("robot"); TabStore.Save();
+            try { File.Delete(tmp); File.Delete(tmp + ".png"); } catch { }
+        }
+
         static void NewBotTests()
         {
             var route = typeof(Program).GetMethod("Route", System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Static);

@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Makes the zips tools/UpdateHarness.cs.txt checks (1.2.3 updater). Usage: update_fixtures.py DIR [release.zip]"""
 import zipfile, os, sys, shutil
+if len(sys.argv) < 2 or sys.argv[1].startswith('-'): sys.exit(__doc__)   # never treat a flag (e.g. --help) as the output folder
 d = sys.argv[1]; os.makedirs(d, exist_ok=True); os.chdir(d)
 exe = b'MZ' + bytes((i * 7919) % 251 for i in range(200 * 1024))
 def mk(name, files, method=zipfile.ZIP_DEFLATED):

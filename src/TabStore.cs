@@ -22,6 +22,7 @@ namespace BotBeacons
         public string Monitor = "";       // Screen.DeviceName the tab is docked on ("" = primary)
         public string Edge = "";          // left|right|top|bottom ("" = right)
         public double Along = -1;         // 0..1 along the edge (-1 = not placed yet)
+        public string ImageBy = "";       // 1.2.6: "user" = picked with the pencil after a Tab pictures choice (an arriving profile picture leaves it)
         public bool Seam;                 // 1.2.3: deliberately docked on a seam (held there): stays on that monitor's inner edge
     }
 
@@ -53,6 +54,7 @@ namespace BotBeacons
                         var d = kv.Value as Dictionary<string, object>; if (d == null || !SafeId(kv.Key)) continue;
                         var p = new TabPrefs { Name = Str(d, "name"), Image = NormImage(Str(d, "image")), Color = Str(d, "color"), Sound = Str(d, "sound"), Monitor = Str(d, "monitor"), Edge = Str(d, "edge") };
                         p.Seam = Str(d, "seam") == "1";
+                        p.ImageBy = Str(d, "imageBy") == "user" ? "user" : "";
                         double a; p.Along = double.TryParse(Str(d, "along"), System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out a) ? a : -1;
                         if (p.Sound != "custom" && p.Sound != "classic") p.Sound = "";
                         if (ParseColor(p.Color) == null) p.Color = "";
@@ -88,6 +90,7 @@ namespace BotBeacons
                 {
                     var p = kv.Value;
                     tabs[kv.Key] = new Dictionary<string, object> { { "name", p.Name }, { "image", p.Image }, { "color", p.Color }, { "sound", p.Sound }, { "monitor", p.Monitor }, { "edge", p.Edge }, { "along", p.Along.ToString("0.####", System.Globalization.CultureInfo.InvariantCulture) }, { "seam", p.Seam ? "1" : "" } };
+                    if (p.ImageBy.Length > 0) ((Dictionary<string, object>)tabs[kv.Key])["imageBy"] = p.ImageBy;   // older apps ignore it
                 }
                 var added = new List<object>();
                 foreach (var u in users) added.Add(new Dictionary<string, object> { { "id", u.Id }, { "name", u.Name }, { "color", u.Color }, { "purpose", u.Purpose } });
@@ -107,7 +110,7 @@ namespace BotBeacons
             return p;
         }
         public static bool Has(string id) { EnsureLoaded(); return prefs.ContainsKey(id); }
-        public static void Reset(string id) { EnsureLoaded(); prefs.Remove(id); try { var f = CustomPath(id); if (File.Exists(f)) File.Delete(f); } catch { } }
+        public static void Reset(string id) { EnsureLoaded(); prefs.Remove(id); try { var f = CustomPath(id); if (File.Exists(f)) File.Delete(f); f = TabGif.PathFor(id); if (File.Exists(f)) File.Delete(f); } catch { } TabGif.Drop(id); }
 
         // ---- user-added tabs
         public static List<UserTab> Added { get { EnsureLoaded(); return users; } }
@@ -146,10 +149,13 @@ namespace BotBeacons
         public static string CustomPath(string id) { return Path.Combine(CustomDir, id + ".png"); }
 
         // the user's chosen file (PNG / ICO / JPG / BMP / GIF) -> a 128 px square PNG in tabs\<id>.png
+        // 1.2.6: an animated GIF is also kept as tabs\<id>.gif (the PNG is its first frame); any other file removes it
         public static string ImportCustom(string id, string file)
         {
             try
             {
+                bool animated = false;
+                if (file.EndsWith(".gif", StringComparison.OrdinalIgnoreCase)) { string err = TabGif.Check(file, out animated); if (err != null) return err; }
                 Bitmap src;
                 if (file.EndsWith(".ico", StringComparison.OrdinalIgnoreCase)) using (var ic = new Icon(file, 256, 256)) src = ic.ToBitmap();
                 else { if (new FileInfo(file).Length > 20 * 1024 * 1024) return "That file is too big (over 20 MB)."; using (var fs = File.OpenRead(file)) using (var im = Image.FromStream(fs)) src = new Bitmap(im); }
@@ -158,6 +164,10 @@ namespace BotBeacons
                     Directory.CreateDirectory(CustomDir);
                     sq.Save(CustomPath(id), ImageFormat.Png);
                 }
+                string gif = TabGif.PathFor(id);
+                if (animated) { string tmp = gif + ".tmp"; File.Copy(file, tmp, true); if (File.Exists(gif)) File.Delete(gif); File.Move(tmp, gif); }
+                else if (File.Exists(gif)) File.Delete(gif);
+                TabGif.Drop(id);
                 Version++;
                 return null;
             }
@@ -199,9 +209,17 @@ namespace BotBeacons
         {
             using (var s = Sprite(d)) return s != null ? TabRender.BeaconPicture(s, ColorFor(d), 96) : TabRender.Initials(d.Name, ColorFor(d), 96);
         }
+        // 1.2.6: the frame of an animated custom picture ("" = not animated); part of the tab's redraw signature
+        public static string FrameTag(BeaconDef d)
+        {
+            if (ImageSource(d) != "custom") return "";
+            int i; return TabGif.Current(d.Id, out i) != null ? "f" + i : "";
+        }
         public static Bitmap ImageFor(BeaconDef d)
         {
-            string src = ImageSource(d), file = src == "custom" ? CustomPath(d.Id) : src == "bot" ? Avatars.PathFor(d.Id) : null;
+            string src = ImageSource(d);
+            if (src == "custom") { int fi; var fr = TabGif.Current(d.Id, out fi); if (fr != null) return fr; }   // 1.2.6: animated GIF
+            string file = src == "custom" ? CustomPath(d.Id) : src == "bot" ? Avatars.PathFor(d.Id) : null;
             string key = src + "|" + (file != null ? File.GetLastWriteTimeUtc(file).Ticks.ToString() : d.Name + "|" + d.Art + "|" + d.Base + "|" + Hex(ColorFor(d)));
             KeyValuePair<string, Bitmap> hit;
             if (imgCache.TryGetValue(d.Id, out hit) && hit.Key == key) return hit.Value;

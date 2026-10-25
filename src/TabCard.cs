@@ -207,8 +207,9 @@ namespace BotBeacons
                     input.Enabled = true; send.Enabled = true;
                     if (ok)
                     {
-                        input.Text = ""; drafts.Remove(owner.Def.Id); status.Text = "Sent (encrypted).";
-                        var t = new Timer { Interval = 700 };   // let "Sent" show for a moment, then slide back in
+                        input.Text = ""; drafts.Remove(owner.Def.Id); status.Text = Wake.SentStatus(owner.Def.Id, "Sent (encrypted).");
+                        bool noWake = status.Text == Wake.NotSetShort;   // 1.2.6: keep the "no wake hook" line up long enough to read
+                        var t = new Timer { Interval = noWake ? 3000 : 700 };   // let "Sent" show for a moment, then slide back in
                         t.Tick += (s2, e2) => { t.Stop(); t.Dispose(); if (!IsDisposed && !ClosingNow) { CloseReason = "sent"; Close(); } };
                         t.Start();
                     }

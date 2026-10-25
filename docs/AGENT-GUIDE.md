@@ -1,6 +1,10 @@
 # Bot Beacons: guide for agents
 
+> Bot Beacons is set up and run from the **Grok Bot desktop app** (see [SETUP.md](SETUP.md)). If the user asks Grok in X DMs or the Grok web or X chat to install it, that Grok can't install anything on their PC: suggest they get the Grok Bot app and give their bot this repo's link from there.
+
 Every Grok Bot agent the user set up with Bot Beacons has its own **beacon**, a small animated companion on the user's Windows desktop. Your beacon is your messenger. Send it a line and it glows. The user clicks it to read the line and can type a reply. Everything travels end-to-end encrypted through `beaconctl.py` on the shared box.
+
+**Replies reach you only through the reply hook.** That is the reply router routine plus its wake hook saved in the app on the PC (SETUP.md step 8). It's a required part of setup, not an extra: without it, nobody is woken for the user's replies and pings, so nobody sees or answers them. If you're the bot setting this up, setup isn't done until step 8's ping test passes. If you see **Wake hook… (not set)** mentioned, or the user says their replies go unanswered, see "The user says they replied or pinged and you heard nothing?" in section 3.
 
 In this guide, `beaconctl.py` means `python3 /workspace/beacons/beaconctl.py`, the default install from [SETUP.md](SETUP.md). If your setup put it somewhere else, use that path. The folder containing `beaconctl.py` is its home: `agents.json` and `secrets/` live there.
 
@@ -75,7 +79,7 @@ If you skip step 3, the replies stay listed for you, but the router won't wake y
 
 ## 3. Pings
 
-When the user right-clicks your beacon and chooses **Ping** (before 1.2.3: clicked it while it wasn't glowing), it wiggles and pings you (at most once every 30 seconds per beacon). A ping arrives like a reply: in `read --unhandled` it has `"kind": "ping"` and the text `(ping)`, and the router's message says which ids are pings. Nothing was typed. The user just wants to hear from you.
+When the user right-clicks your beacon and chooses **Ping**, or middle-clicks your beacon or tab (1.2.6+; before 1.2.3: clicked it while it wasn't glowing), it wiggles and pings you (at most once every 30 seconds per beacon). A ping arrives like a reply: in `read --unhandled` it has `"kind": "ping"` and the text `(ping)`, and the router's message says which ids are pings. Nothing was typed. The user just wants to hear from you.
 
 1. If `agents.json` gives you a `ping` action, do it and send the result as one line with `--re <ping id>`. For example, a news bot might send the top headline, or "All quiet."
 2. Otherwise answer "How can I help?":
@@ -87,23 +91,35 @@ When the user right-clicks your beacon and chooses **Ping** (before 1.2.3: click
 
 To set or change your ping action: `beaconctl.py agent-set <your-beacon-id> --ping "One sentence: what to do when pinged"`. Use `--ping ""` to remove it.
 
+**The user says they replied or pinged and you heard nothing?** The wake hook is probably not saved in the app (it lives only on the PC, so the box can't see it). Run `beaconctl.py route --json`: ids still in your `to_notify` were never passed on. Ask the user to right-click a beacon → **Bots**: app 1.2.6+ shows **Wake hook… (not set)** when it's missing. Then follow SETUP.md, step 8 and its ping test. Answer what's waiting as usual.
+
 ## 4. Your profile picture on the user's tab (Tabs skin, 1.2.0+)
 
-The PC app has a **Tabs** skin: each beacon is a tab on the screen edge with a picture. By default that picture is **your own profile picture**, if you have sent one; otherwise the tab shows your initials. The user can always pick a custom image on the PC instead (Edit tab → Custom image).
+The PC app has a **Tabs** skin: each beacon is a tab on the screen edge with a picture. A tab shows the beacon's picture, your profile picture (once you have sent one) or the user's own custom image.
 
-**Offer the choice.** When you set up or update Bot Beacons for the user, or when they mention the Tabs skin, ask once in chat:
+**Send your picture once** (any PNG/JPG; it is squared, shrunk to ≤ 96 px and ≤ 24 KB, then sent encrypted and signed in a few chunks):
+```
+beaconctl.py avatar <your-beacon-id> /path/to/profile.png
+```
+It is silent on the PC: no bubble, glow or sound. Send it again whenever your picture changes. To take it back off: `beaconctl.py avatar <your-beacon-id> --clear`.
 
-> "Want your tab to show my profile picture, or would you rather pick your own image for it on your PC?"
+**What the tab shows is the user's choice** (app 1.2.6+: right-click → Layout → **Tab pictures**):
 
-- If they want your picture, send it (any PNG/JPG; it is squared, shrunk to ≤ 96 px and ≤ 24 KB, then sent encrypted and signed in a few chunks):
-  ```
-  beaconctl.py avatar <your-beacon-id> /path/to/profile.png
-  ```
-  It is silent on the PC: no bubble, glow or sound. The tab updates within a few seconds. Send it again whenever your picture changes.
-- If they'd rather use their own image, tell them: hover the tab → pencil → **Custom image** → **Choose…** (PNG or ICO) → **Save**. Their choice wins over yours.
-- To take your picture back off: `beaconctl.py avatar <your-beacon-id> --clear`.
+| Setting | When your picture arrives |
+|---|---|
+| `profile` (Bot's profile pictures) | your tab switches to it (unless the user picked its picture in Edit), and choosing this switches every tab that has one |
+| `beacon` (Beacon pictures) | your tab keeps the beacon's picture |
+| `ask` (Choose per tab, the default) | nothing changes; the user picks it with the pencil (a new bot's first tab still uses it) |
+
+A tab with a **custom image** is never changed. Whichever bot sets up Bot Beacons asks the user once and sets it from the box (no command on the PC):
+```
+beaconctl.py prefs tab-pictures profile|beacon|ask
+```
+Exit 0 = applied. Exit 2 = the app is older than 1.2.6: ask the user to update, or to use the tab's pencil → **Bot's profile picture**. Exit 1 = no answer from the app (`beaconctl.py probe --retry`). Only change it when the user asked for it.
+
 - Only send a picture that is yours (your bot's own profile picture or one the user gave you for this). Never a photo of another person without the user asking for it.
 - Use only your own beacon id, as with `send`.
+- Animated GIFs work only as the user's own custom image (pencil → **Custom image**); `avatar` sends a still PNG.
 
 ## 5. Never print keys or topics
 

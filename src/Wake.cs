@@ -103,6 +103,14 @@ namespace BotBeacons
         {
             lock (gate) { WakeHook h; if (PerBeacon.TryGetValue(beacon, out h) && h.Valid) return h; return Default.Valid ? Default : null; }
         }
+        // 1.2.6: with no hook saved, replies and pings still reach the relay but no bot is woken. The app says so quietly:
+        // the tray tooltip, the Bots menu item, a short line after each send and at most one balloon per run (Program.WakeNotSet).
+        public static bool AnySet { get { lock (gate) return Default.Valid || PerBeacon.Count > 0; } }
+        public static bool Covers(string beacon) { return For(beacon) != null; }
+        public const string NotSetShort = "Sent, but no wake hook: Bots \u2192 Wake hook\u2026";
+        public const string NotSetLong = "Saved, but your bots won't be woken until the wake hook is set (right-click > Bots > Wake hook\u2026).";
+        public static string SentStatus(string beacon, string sent) { return Settings.Link.Valid && !Covers(beacon) ? NotSetShort : sent; }
+
         public static string StatusLine()
         {
             lock (gate)

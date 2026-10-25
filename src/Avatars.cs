@@ -31,6 +31,7 @@ namespace BotBeacons
         static bool Hex(string s, int maxLen) { if (s.Length == 0 || s.Length > maxLen) return false; foreach (char c in s) if (!Uri.IsHexDigit(c)) return false; return true; }
 
         // returns a short log line (never the picture itself)
+        public static event Action<string> Saved;   // 1.2.6: raised on the relay thread with the bot id (TabPictures)
         public static string Receive(Dictionary<string, object> p)
         {
             string bot = S(p, "bot");
@@ -74,6 +75,7 @@ namespace BotBeacons
             string err = Store(bot, whole);
             if (err != null) return "avatar rejected (" + err + ")";
             version++;
+            var sv = Saved; if (sv != null) try { sv(bot); } catch { }
             return "avatar saved for '" + bot + "' (" + whole.Length + " bytes)";
         }
 

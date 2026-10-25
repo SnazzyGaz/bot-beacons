@@ -15,7 +15,11 @@ namespace BotBeacons
     {
         public readonly BeaconDef Def;
         readonly Bitmap idle, alertArt;
-        readonly int cw, ch;
+        readonly int cw, ch;   // the window (1.2.5: the art plus Pad on every side)
+        readonly int aw, ah;   // the art itself; everything art-relative (eye, lamp, layers, pivots) is drawn at (Pad, Pad)
+        // 1.2.5: transparent room round the art so the "!" badge, its halo, the red aura, tilts and hops are never clipped by
+        // the window (1.2.4 drew them inside a window exactly the art's size). Alpha-0 pixels pass clicks through.
+        public const int Pad = 32;
         readonly FrameTimer timer = new FrameTimer { Interval = 40 };   // shared display-paced clock (FrameClock.cs)
         readonly Stopwatch clock = Stopwatch.StartNew();
         readonly Random rnd;
@@ -34,6 +38,7 @@ namespace BotBeacons
         public readonly List<PetMessage> History = new List<PetMessage>();   // this session only, newest last
         bool alert; double alertStart;
         public bool Attention;            // a pending "needs attention" call: stronger pulse + "!" badge. Sticky: only the bubble's Open in chat or Dismiss link clears it
+        public bool Alerting { get { return alert; } }   // 1.2.4: the glow/pulse is on (harness)
         public PetMessage AttentionMsg;   // the latest attention call (the bubble shows its reason; Open in chat / Dismiss end it)
         BubbleBase bubble;
         public BubbleBase OpenBubbleForm { get { return bubble != null && !bubble.IsDisposed && bubble.Visible ? bubble : null; } }
@@ -47,7 +52,10 @@ namespace BotBeacons
             if (def.Layered) { idle = BeaconConfig.Compose(def, false); alertArt = BeaconConfig.Compose(def, true); }
             if (idle == null) idle = BeaconConfig.LoadArt(def.Art) ?? BeaconConfig.LoadArt("beacon.png");
             if (alertArt == null) alertArt = BeaconConfig.LoadArt(def.AlertArt) ?? idle;
-            cw = idle.Width; ch = idle.Height;
+            aw = idle.Width; ah = idle.Height; cw = aw + 2 * Pad; ch = ah + 2 * Pad;
+            using (var pi = PadArt(idle)) using (var pa = PadArt(alertArt))
+                hitPad = HitPad.Build(new[] { pi, pa }, HitPad.Margin, Pad + aw / 2f, Pad + ah * 0.42f, HitPad.TiltDeg);   // 1.2.4: solid silhouette, any tilt, + margin
+            Cursor = Cursors.Hand;   // over the beacon (its hit pixels); set as the form's Cursor, applied in WM_SETCURSOR
             int seed = 17; foreach (char c in def.Id) seed = seed * 31 + c;
             rnd = new Random(seed);
             phase = rnd.NextDouble() * Math.PI * 2; bobSpeed = 1.3 + rnd.NextDouble() * 0.6; swaySpeed = 0.7 + rnd.NextDouble() * 0.4;
@@ -60,7 +68,7 @@ namespace BotBeacons
             int defX = wa.Right - (index + 1) * (cw + 40) - 40, defY = wa.Bottom - ch - 110 - (index % 2) * 60;
             var pos = Settings.Get("pos." + def.Id, "").Split(',');
             int px, py;
-            if (pos.Length == 2 && int.TryParse(pos[0], out px) && int.TryParse(pos[1], out py)) { homeX = px; homeY = py; } else { homeX = defX; homeY = defY; }
+            if (pos.Length == 2 && int.TryParse(pos[0], out px) && int.TryParse(pos[1], out py)) { homeX = px - Pad; homeY = py - Pad; } else { homeX = defX; homeY = defY; }   // saved = the art's top-left
             ClampHome();
             winX = (int)homeX; winY = (int)homeY; posX = winX; posY = winY; Location = new Point(winX, winY);
             timer.Tick += (s, e) => Tick();
@@ -83,11 +91,19 @@ namespace BotBeacons
         public void Notify(PetMessage m)
         {
             AddHistory(m);
+            // 1.1.5: incoming only (own replies/pings never come through here; probes never reach Notify); plays for hidden/paused beacons too unless muted
+            if (!m.FromUser && !m.Silent) Sound.Alert(Def, m.IsAttention);
             if (m.IsAttention)
             {
                 // sticky: the badge and pulse stay on even while the bubble is open, until Open in chat or Dismiss
                 AttentionMsg = m; Attention = true; alert = true; alertStart = clock.Elapsed.TotalSeconds;
                 AttentionStore.Set(Def.Id, m);
+                // 1.2.4: the call must be seen: a hidden beacon (hidden, a hidden test beacon) comes on screen for it
+                if (!TabsSkin.OnScreen(this) && Visibility.AttentionShows(this))
+                {
+                    Log.Write(Def.Id + ": shown for an attention call (it was hidden" + (Def.Test ? ", test beacon" : "") + ").");
+                    Visibility.Apply();
+                }
             }
             if (bubble != null && !bubble.IsDisposed && bubble.Visible)
             {
@@ -99,13 +115,17 @@ namespace BotBeacons
             }
             Unread.Add(m);
             if (!m.IsAttention && !alert) { alert = true; alertStart = clock.Elapsed.TotalSeconds; }
-            Log.Write(Def.Id + ": alert on" + (Attention ? " (needs attention)" : "") + ", " + Unread.Count + " unread" + (Visible ? "" : " (beacon hidden)") + ".");
+            Log.Write(Def.Id + ": alert on" + (Attention ? " (needs attention)" : "") + ", " + Unread.Count + " unread" + (TabsSkin.OnScreen(this) ? (Skin.IsTab(this) ? " (tab)" : "") : " (beacon hidden)") + ".");
             TrayBadge.Update();
         }
 
         void AddHistory(PetMessage m) { History.Add(m); while (History.Count > 50) History.RemoveAt(0); }
 
         public string LastIncomingId { get { for (int i = History.Count - 1; i >= 0; i--) if (!History[i].FromUser) return History[i].Id; return ""; } }
+
+        // 1.1.6: 0 if a reply with this text fits in one relay message, else about what % of it has to go
+        public int ReplyOverPercent(string text) { return Relay.ReplyOverPercent(Def.Id, text ?? "", LastIncomingId); }
+        public bool ReplyTooLong(string text) { return Relay.ReplyEnvelopeBytes(Def.Id, text ?? "", LastIncomingId) > Crypto.MaxEnvelopeBytes; }   // one seal: cheap enough per keystroke
 
         public void SendReplyText(string text, Action<bool, string> done = null)
         {
@@ -117,6 +137,9 @@ namespace BotBeacons
 
         // opening the bubble reads the normal messages; a pending attention call stays (badge + pulse) until resolved
         void ClearAlert() { Unread.Clear(); if (!Attention) alert = false; }
+        // 1.2.3: the menu's "Mark all read". Clears the unread glow; a sticky attention call stays (only Open in chat / Dismiss end it)
+        public bool CanMarkRead { get { return Unread.Count > 0 || (alert && !Attention); } }
+        public bool MarkRead() { if (!CanMarkRead) return false; ClearAlert(); Log.Write(Def.Id + ": marked read (menu)."); return true; }
 
         // the only ways an attention call ends: "opened app" (the Open in chat link) or "dismissed" (the Dismiss link)
         public void ResolveAttention(string how)
@@ -125,6 +148,8 @@ namespace BotBeacons
             Attention = false; AttentionMsg = null; alert = false; Unread.Clear();
             AttentionStore.Set(Def.Id, null);
             Log.Write(Def.Id + ": attention cleared (" + how + ").");
+            // 1.2.4: a beacon that was only on screen for the call goes back to hidden (after the click that resolved it)
+            if (!Visibility.ShouldShow(this) && TabsSkin.OnScreen(this)) { if (IsHandleCreated) BeginInvoke((Action)Visibility.Apply); else Visibility.Apply(); }
         }
 
         // v0.10 bubble footer links, the same in every bubble (both styles, messages, ping replies, replies, attention).
@@ -198,7 +223,7 @@ namespace BotBeacons
         public void RefitToScreens()
         {
             var pos = Settings.Get("pos." + Def.Id, "").Split(','); int px, py;
-            if (!dragging && !flinging && pos.Length == 2 && int.TryParse(pos[0], out px) && int.TryParse(pos[1], out py)) { homeX = px; homeY = py; }
+            if (!dragging && !flinging && pos.Length == 2 && int.TryParse(pos[0], out px) && int.TryParse(pos[1], out py)) { homeX = px - Pad; homeY = py - Pad; }
             ClampHome();
         }
 
@@ -213,7 +238,7 @@ namespace BotBeacons
         }
         public void ShowBeacon()
         {
-            if (!Visibility.ShouldShow(this)) return;
+            if (!Visibility.ShouldShow(this) || Skin.IsTab(this)) return;
             lastSway = 999; lastX = int.MinValue;   // force a full redraw (the glow may have changed while hidden)
             Show();
             if (bubbleWasOpen) { bubbleWasOpen = false; OpenBubble(false); }
@@ -221,7 +246,7 @@ namespace BotBeacons
         // hidden beacons never appear by accident (start-up, "Show test beacons", the main form at Application.Run)
         protected override void SetVisibleCore(bool value)
         {
-            if (value && !Visibility.ShouldShow(this)) { if (!IsHandleCreated) CreateHandle(); value = false; }
+            if (value && (!Visibility.ShouldShow(this) || Skin.IsTab(this))) { if (!IsHandleCreated) CreateHandle(); value = false; }
             base.SetVisibleCore(value);
         }
 
@@ -229,13 +254,16 @@ namespace BotBeacons
         public void OpenBubble(bool takeFocus = false)
         {
             if (bubble != null && !bubble.IsDisposed && bubble.Visible) { bubble.CloseReason = "toggled"; bubble.Close(); return; }
-            if (!Visible)
+            if (!TabsSkin.OnScreen(this))
             {
                 // a hidden beacon opens only on the user's own request, and then comes back on screen first
-                if (!takeFocus || (Def.Test && !Program.ShowTest)) { Log.Write(Def.Id + ": not opened (beacon hidden)."); return; }
+                if (!takeFocus || (Def.Test && !Program.ShowTest && !Attention)) { Log.Write(Def.Id + ": not opened (beacon hidden)."); TabAnchor = Rectangle.Empty; return; }
                 Visibility.Reveal(this);
-                if (!Visible) return;
+                if (!TabsSkin.OnScreen(this)) return;
             }
+            // 1.2.0 Tabs skin: the bubble points at the shelf row or tab it was opened from (else this beacon's tab)
+            bubbleAnchor = Skin.IsTab(this) ? (TabAnchor.IsEmpty ? TabsSkin.AnchorFor(this) : TabAnchor) : Rectangle.Empty;
+            TabAnchor = Rectangle.Empty;
             bool att = Attention;
             ClearAlert();
             bubble = Theme.CreateBubble(this, att ? AttentionMsg : null);
@@ -249,8 +277,10 @@ namespace BotBeacons
         public void PlaceBubble()
         {
             if (bubble == null || bubble.IsDisposed) return;
-            bubble.Place(new Rectangle(winX, winY, cw, ch));
+            bubble.Place(Skin.IsTab(this) && !bubbleAnchor.IsEmpty ? bubbleAnchor : ArtRect);
         }
+        public Rectangle TabAnchor;   // set by the Tabs skin just before OpenBubble
+        Rectangle bubbleAnchor;
 
         // ------------------------------------------------------------ animation
         // Motion is cheap by design: bob/wander only move the window (SetWindowPos, no redraw); the sprite is redrawn
@@ -424,10 +454,11 @@ namespace BotBeacons
             var s = Screen.FromPoint(new Point(c.X + c.Width / 2, c.Y + c.Height / 2)).WorkingArea;
             int cy = c.Y + c.Height / 2, cx = c.X + c.Width / 2;
             // bounce on an edge unless another monitor continues there; lose 40% of the speed per bounce
-            if (c.Left < s.Left && fvx < 0 && !ScreenAt(c.Left - 2, cy)) { fx += s.Left - c.Left; fvx = -fvx * 0.6f; bounces++; }
-            if (c.Right > s.Right && fvx > 0 && !ScreenAt(c.Right + 2, cy)) { fx -= c.Right - s.Right; fvx = -fvx * 0.6f; bounces++; }
-            if (c.Top < s.Top && fvy < 0 && !ScreenAt(cx, c.Top - 2)) { fy += s.Top - c.Top; fvy = -fvy * 0.6f; bounces++; }
-            if (c.Bottom > s.Bottom && fvy > 0 && !ScreenAt(cx, c.Bottom + 2)) { fy -= c.Bottom - s.Bottom; fvy = -fvy * 0.6f; bounces++; }
+            // 1.2.3 throw to dock: hitting an outer edge docks the beacon there as a tab instead of bouncing (setting, default on)
+            if (c.Left < s.Left && fvx < 0 && !ScreenAt(c.Left - 2, cy)) { if (ThrowDock(TabEdge.Left, new Point(s.Left, cy))) return; fx += s.Left - c.Left; fvx = -fvx * 0.6f; bounces++; }
+            if (c.Right > s.Right && fvx > 0 && !ScreenAt(c.Right + 2, cy)) { if (ThrowDock(TabEdge.Right, new Point(s.Right - 1, cy))) return; fx -= c.Right - s.Right; fvx = -fvx * 0.6f; bounces++; }
+            if (c.Top < s.Top && fvy < 0 && !ScreenAt(cx, c.Top - 2)) { if (ThrowDock(TabEdge.Top, new Point(cx, s.Top))) return; fy += s.Top - c.Top; fvy = -fvy * 0.6f; bounces++; }
+            if (c.Bottom > s.Bottom && fvy > 0 && !ScreenAt(cx, c.Bottom + 2)) { if (ThrowDock(TabEdge.Bottom, new Point(cx, s.Bottom - 1))) return; fy -= c.Bottom - s.Bottom; fvy = -fvy * 0.6f; bounces++; }
             // v0.10: plain exponential decay all the way down, stopping only below 0.05 px per frame (3 px/s at 60 fps),
             // and the sub-pixel position is kept (v0.9 stopped at 30 px/s = 0.5 px/frame and rounded to a whole pixel)
             float fdt = Math.Max(dt, 1f / 60f), sp2 = fvx * fvx + fvy * fvy;
@@ -439,6 +470,15 @@ namespace BotBeacons
                 Rest(t, fx, fy);
                 if (Settings.DevHooks && !sim) Log.Write(Def.Id + ": fling came to rest at " + winX + "," + winY + " (" + bounces + " bounce" + (bounces == 1 ? "" : "s") + ").");
             }
+        }
+
+        bool ThrowDock(TabEdge e, Point impact)
+        {
+            if (sim || !TabsSkin.ThrowToDock || !TabsSkin.FlingDock(this, e, impact)) return false;
+            flinging = false; fvx = fvy = 0;
+            // its floating spot stays where it was before it was picked up (Layout > All floating puts it back there)
+            homeX = dragHomeX; homeY = dragHomeY; ClampHome(); SavePos();
+            return true;
         }
 
         float simEx, simEy;
@@ -485,20 +525,36 @@ namespace BotBeacons
             get
             {
                 if (!content.IsEmpty) return content;
-                int x0 = cw, y0 = ch, x1 = 0, y1 = 0;
-                var data = idle.LockBits(new Rectangle(0, 0, cw, ch), ImageLockMode.ReadOnly, PixelFormat.Format32bppArgb);
-                var px = new byte[data.Stride * ch]; Marshal.Copy(data.Scan0, px, 0, px.Length); idle.UnlockBits(data);
-                for (int yy = 0; yy < ch; yy++) for (int xx = 0; xx < cw; xx++) if (px[yy * data.Stride + xx * 4 + 3] > 24) { if (xx < x0) x0 = xx; if (xx > x1) x1 = xx; if (yy < y0) y0 = yy; if (yy > y1) y1 = yy; }
-                content = x1 > x0 ? new Rectangle(x0, y0, x1 - x0 + 1, y1 - y0 + 1) : new Rectangle(0, 0, cw, ch);
+                int x0 = aw, y0 = ah, x1 = 0, y1 = 0;
+                var data = idle.LockBits(new Rectangle(0, 0, aw, ah), ImageLockMode.ReadOnly, PixelFormat.Format32bppArgb);
+                var px = new byte[data.Stride * ah]; Marshal.Copy(data.Scan0, px, 0, px.Length); idle.UnlockBits(data);
+                for (int yy = 0; yy < ah; yy++) for (int xx = 0; xx < aw; xx++) if (px[yy * data.Stride + xx * 4 + 3] > 24) { if (xx < x0) x0 = xx; if (xx > x1) x1 = xx; if (yy < y0) y0 = yy; if (yy > y1) y1 = yy; }
+                content = x1 > x0 ? new Rectangle(x0, y0, x1 - x0 + 1, y1 - y0 + 1) : new Rectangle(0, 0, aw, ah);
+                content.Offset(Pad, Pad);   // window coordinates
                 return content;
             }
         }
+        Rectangle ArtContent { get { var c = Content; c.Offset(-Pad, -Pad); return c; } }
+        Rectangle ArtRect { get { return new Rectangle(winX + Pad, winY + Pad, aw, ah); } }   // the art on screen (bubbles anchor to it)
+        static Bitmap PadArt(Bitmap a)
+        {
+            var b = new Bitmap(a.Width + 2 * Pad, a.Height + 2 * Pad, PixelFormat.Format32bppArgb);
+            using (var g = Graphics.FromImage(b)) { g.Clear(Color.Transparent); g.DrawImage(a, Pad, Pad, a.Width, a.Height); }
+            return b;
+        }
+        // 1.2.5: the "!" badge with its halo, and the red attention aura (window coordinates). Kept inside the window (Pad) and,
+        // with the art, inside the monitor's work area (KeepOnScreen), so an alert never draws off screen.
+        public const float BadgeR = 13.5f, BadgeHalo = 4f;
+        public RectangleF BadgeBox { get { float cx = Pad + aw - 20f, cy = Pad + 22f, r = BadgeR + BadgeHalo + 1f; return new RectangleF(cx - r, cy - r, 2 * r, 2 * r); } }
+        public RectangleF AuraBox { get { var c = Content; float cx = c.X + c.Width / 2f, cy = c.Y + c.Height * 0.42f, r = Math.Min(aw, ah) * 0.5f; return new RectangleF(cx - r, cy - r, 2 * r, 2 * r); } }
+        public Rectangle VisibleBox { get { return Rectangle.Union(Content, Rectangle.Round(RectangleF.Union(BadgeBox, AuraBox))); } }
+        public Size WindowSize { get { return new Size(cw, ch); } }
 
         // keep the visible beacon (not its transparent margin) inside the screen it is on
         void KeepOnScreen(ref int x, ref int y)
         {
-            var c = Content;
-            var s = Screen.FromPoint(new Point(x + c.X + c.Width / 2, y + c.Y + c.Height / 2)).WorkingArea;
+            var c = Content; var s = Screen.FromPoint(new Point(x + c.X + c.Width / 2, y + c.Y + c.Height / 2)).WorkingArea;
+            c = VisibleBox;   // 1.2.5: the badge and aura too, not just the art
             x = Math.Max(s.Left - c.Left, Math.Min(x, s.Right - c.Right));
             y = Math.Max(s.Top - c.Top, Math.Min(y, s.Bottom - c.Bottom));
         }
@@ -517,7 +573,7 @@ namespace BotBeacons
         // UpdateLayeredWindow pushes it. No per-frame allocations, so five beacons stay cheap.
         Bitmap frame; Graphics fg; IntPtr memDC, dib, oldObj, frameBits; int[] fastBuf;
         readonly System.Collections.Generic.Dictionary<Bitmap, FastBlit.Src> fastSrc = new System.Collections.Generic.Dictionary<Bitmap, FastBlit.Src>();
-        FastBlit.Src FastSrc(Bitmap b) { FastBlit.Src v; if (!fastSrc.TryGetValue(b, out v)) { v = FastBlit.From(b, Content); fastSrc[b] = v; } return v; }
+        FastBlit.Src FastSrc(Bitmap b) { FastBlit.Src v; if (!fastSrc.TryGetValue(b, out v)) { v = FastBlit.From(b, ArtContent); fastSrc[b] = v; } return v; }
         static Bitmap ToPArgb(Bitmap src)
         {
             var b = new Bitmap(src.Width, src.Height, PixelFormat.Format32bppPArgb);
@@ -533,13 +589,13 @@ namespace BotBeacons
             int k = Math.Max(1, Math.Min(Levels, (int)Math.Round(pulse * Levels)));
             if (alertCache[k] != null) return alertCache[k];
             float p = k / (float)Levels;
-            var b = new Bitmap(cw, ch, PixelFormat.Format32bppPArgb);
+            var b = new Bitmap(aw, ah, PixelFormat.Format32bppPArgb);
             using (var g = Graphics.FromImage(b))
             {
                 g.SmoothingMode = SmoothingMode.AntiAlias; g.Clear(Color.Transparent);
-                g.DrawImage(idleP, 0, 0, cw, ch);
+                g.DrawImage(idleP, 0, 0, aw, ah);
                 var cm = new ColorMatrix { Matrix33 = Math.Min(1f, 0.35f + p) };
-                using (var ia = new ImageAttributes()) { ia.SetColorMatrix(cm); g.DrawImage(alertP, new Rectangle(0, 0, cw, ch), 0, 0, cw, ch, GraphicsUnit.Pixel, ia); }
+                using (var ia = new ImageAttributes()) { ia.SetColorMatrix(cm); g.DrawImage(alertP, new Rectangle(0, 0, aw, ah), 0, 0, aw, ah, GraphicsUnit.Pixel, ia); }
                 Glow(g, Def.Eye, 13f + 7f * p, (int)(120 + 110 * p), Def.Color);
                 Glow(g, Def.Lamp, 9f + 5f * p, (int)(80 + 90 * p), Def.Color);
             }
@@ -570,8 +626,8 @@ namespace BotBeacons
                 }
                 else
                 {
-                    if (run == null) { run = new Bitmap(cw, ch, PixelFormat.Format32bppPArgb); rg = Graphics.FromImage(run); rg.Clear(Color.Transparent); }
-                    rg.DrawImage(kv.Value, 0, 0, cw, ch);
+                    if (run == null) { run = new Bitmap(aw, ah, PixelFormat.Format32bppPArgb); rg = Graphics.FromImage(run); rg.Clear(Color.Transparent); }
+                    rg.DrawImage(kv.Value, 0, 0, aw, ah);
                 }
             }
             if (run != null) { rg.Dispose(); list.Add(new KeyValuePair<string, Bitmap>("", run)); }
@@ -613,7 +669,8 @@ namespace BotBeacons
             {
                 // fast path (idle and plain glow): one cached sprite, rotated + sub-pixel offset, no GDI+
                 long c0 = FrameClock.Ticks;
-                FastBlit.Draw(FastSrc(pulse > 0 ? AlertLevel(pulse) : idleP), fastBuf, cw, ch, cw / 2f, ch * 0.42f, swayDeg, fracX, fracY);
+                FastBlit.Draw(FastSrc(pulse > 0 ? AlertLevel(pulse) : idleP), fastBuf, cw, ch, aw / 2f, ah * 0.42f, swayDeg, fracX + Pad, fracY + Pad);
+                HitPad.Apply(hitPad, fastBuf);
                 Marshal.Copy(fastBuf, 0, frameBits, fastBuf.Length);
                 DumpFrame(t);   // the frames hook saves exactly what the fast path shows
                 lastSway = swayDeg; lastPulse = pulse; lastDynamic = dynamic; lastFX = fracX; lastFY = fracY;
@@ -628,33 +685,9 @@ namespace BotBeacons
             {
                 var g = fg;
                 long c0 = FrameClock.Ticks;
-                g.ResetTransform(); g.Clear(Color.Transparent);
-                g.TranslateTransform(fracX, fracY);
-                if (att) AnimPlay.Glow(g, new PointF(Content.X + Content.Width / 2f, Content.Y + Content.Height * 0.42f), Math.Min(cw, ch) * 0.5f * (0.82f + 0.18f * aura), (int)(40 + 120 * aura), Color.FromArgb(235, 30, 24));   // red heartbeat aura
-                g.TranslateTransform(cw / 2f, ch * 0.42f); g.RotateTransform(swayDeg); g.TranslateTransform(-cw / 2f, -ch * 0.42f);
-                var split = pulse <= 0 && play != null ? Split(play) : null;
-                if (pulse > 0) g.DrawImage(AlertLevel(pulse), 0, 0, cw, ch);
-                else if (split != null)
-                {
-                    foreach (var kv in split)
-                    {
-                        float a = 1f; lm.Reset();
-                        if (kv.Key.Length == 0 || !play.LayerXform(kv.Key, t, lm, out a)) { g.DrawImage(kv.Value, 0, 0, cw, ch); continue; }
-                        var st = g.Save(); g.MultiplyTransform(lm);
-                        if (a >= 0.99f) g.DrawImage(kv.Value, 0, 0, cw, ch);
-                        else using (var ia = new ImageAttributes()) { ia.SetColorMatrix(new ColorMatrix { Matrix33 = Math.Max(0f, a) }); g.DrawImage(kv.Value, new Rectangle(0, 0, cw, ch), 0, 0, cw, ch, GraphicsUnit.Pixel, ia); }
-                        g.Restore(st);
-                    }
-                }
-                else g.DrawImage(idleP, 0, 0, cw, ch);
-                if (play != null) play.Effects(g, t, Def, Def.Anim);
-                if (att)
-                {
-                    Glow(g, Def.Eye, 18f + 14f * pulse, (int)(90 + 150 * pulse), Color.White);   // white flare over the coloured glow
-                    g.ResetTransform(); g.TranslateTransform(fracX, fracY);
-                    DrawBadge(g, pulse);
-                }
+                PaintFrame(g, swayDeg, pulse, aura, t, fracX, fracY, att);
                 g.Flush(FlushIntention.Sync);
+                HitPad.Apply(hitPad, frameBits);
                 lastSway = swayDeg; lastPulse = pulse; lastDynamic = dynamic; lastFX = fracX; lastFY = fracY;
                 DumpFrame(t);
                 lastX = winX; lastY = winY;
@@ -671,7 +704,41 @@ namespace BotBeacons
             }
         }
 
-        // dev hook "frames": save the next n drawn sprite frames (the pet's own pixels, never the screen)
+        // 1.2.5: the full (GDI+) drawing of one frame into a cw x ch surface: red aura, art (tilted about its pivot), layer
+        // animation, glows and the "!" badge. Split out of Render so the harness can paint a real frame without a window.
+        public void PaintFrame(Graphics g, float swayDeg, float pulse, float aura, double t, float fracX, float fracY, bool att)
+        {
+            if (idleP == null) { idleP = ToPArgb(idle); alertP = ToPArgb(alertArt); }
+            g.ResetTransform(); g.Clear(Color.Transparent);
+            g.TranslateTransform(fracX, fracY);
+            if (att) AnimPlay.Glow(g, new PointF(Content.X + Content.Width / 2f, Content.Y + Content.Height * 0.42f), Math.Min(aw, ah) * 0.5f * (0.82f + 0.18f * aura), (int)(40 + 120 * aura), Color.FromArgb(235, 30, 24));   // red heartbeat aura
+            g.TranslateTransform(Pad, Pad);   // art coordinates from here
+            g.TranslateTransform(aw / 2f, ah * 0.42f); g.RotateTransform(swayDeg); g.TranslateTransform(-aw / 2f, -ah * 0.42f);
+            var split = pulse <= 0 && play != null ? Split(play) : null;
+            if (pulse > 0) g.DrawImage(AlertLevel(pulse), 0, 0, aw, ah);
+            else if (split != null)
+            {
+                foreach (var kv in split)
+                {
+                    float a = 1f; lm.Reset();
+                    if (kv.Key.Length == 0 || !play.LayerXform(kv.Key, t, lm, out a)) { g.DrawImage(kv.Value, 0, 0, aw, ah); continue; }
+                    var st = g.Save(); g.MultiplyTransform(lm);
+                    if (a >= 0.99f) g.DrawImage(kv.Value, 0, 0, aw, ah);
+                    else using (var ia = new ImageAttributes()) { ia.SetColorMatrix(new ColorMatrix { Matrix33 = Math.Max(0f, a) }); g.DrawImage(kv.Value, new Rectangle(0, 0, aw, ah), 0, 0, aw, ah, GraphicsUnit.Pixel, ia); }
+                    g.Restore(st);
+                }
+            }
+            else g.DrawImage(idleP, 0, 0, aw, ah);
+            if (play != null) play.Effects(g, t, Def, Def.Anim);
+            if (att)
+            {
+                Glow(g, Def.Eye, 18f + 14f * pulse, (int)(90 + 150 * pulse), Color.White);   // white flare over the coloured glow
+                g.ResetTransform(); g.TranslateTransform(fracX + Pad, fracY + Pad);
+                DrawBadge(g, pulse);
+            }
+        }
+
+        // dev hook "frames": save the next n drawn sprite frames (the app's own pixels, never the screen)
         int dumpLeft, dumpIndex; double dumpEvery, nextDump; string dumpDir;
         public void StartFrames(int n, int everyMs, string dir)
         {
@@ -695,7 +762,7 @@ namespace BotBeacons
         // "!" badge in the top-right corner of the sprite (outside the beacon art), drawn unrotated
         void DrawBadge(Graphics g, float pulse)
         {
-            float r = 12f + 1.5f * pulse, cx = cw - 20f, cy = 22f;
+            float r = BadgeR - 1.5f + 1.5f * pulse, cx = aw - 20f, cy = 22f;   // art coordinates (BadgeBox)
             using (var halo = new SolidBrush(Color.FromArgb((int)(60 + 90 * pulse), 255, 60, 40))) g.FillEllipse(halo, cx - r - 4, cy - r - 4, 2 * r + 8, 2 * r + 8);
             using (var b = new SolidBrush(Color.FromArgb(255, 230, 40, 30))) g.FillEllipse(b, cx - r, cy - r, 2 * r, 2 * r);
             using (var pen = new Pen(Color.White, 2f)) g.DrawEllipse(pen, cx - r, cy - r, 2 * r, 2 * r);
@@ -719,6 +786,9 @@ namespace BotBeacons
         }
 
         ContextMenuStrip menu;   // 1.1.3: this beacon's right-click menu, reused
+        // 1.2.0: the same reusable menu, for the Tabs skin (a tab or shelf row shows it, owned by that window)
+        public ContextMenuStrip MenuForTabs { get { if (menu == null || menu.IsDisposed) menu = Program.BuildMenu(this); return menu; } }
+        public ContextMenuStrip MenuIfBuilt { get { return menu != null && !menu.IsDisposed ? menu : null; } }
 
         protected override void Dispose(bool disposing)
         {
@@ -750,7 +820,33 @@ namespace BotBeacons
         protected override void OnVisibleChanged(EventArgs e) { base.OnVisibleChanged(e); timer.Enabled = Visible && IsHandleCreated; }
         protected override void OnFormClosed(FormClosedEventArgs e) { SavePos(); base.OnFormClosed(e); }
 
-        void SavePos() { Settings.Set("pos." + Def.Id, ((int)homeX) + "," + ((int)homeY)); Settings.Save(); }
+        float dragHomeX, dragHomeY;
+        int[] hitPad; double downAt;
+        // 1.2.4: press bookkeeping for ClickRules (screen px from the press point; see ClickLogic.cs)
+        double pressMaxDist; bool caughtFling; double lastOpenClickAt = -10; int clickSlop = -1;
+        int ClickSlop
+        {
+            get
+            {
+                if (clickSlop < 0)
+                {
+                    float scale = 1f;
+                    try { using (var g = CreateGraphics()) scale = g.DpiX / 96f; } catch { }
+                    clickSlop = ClickRules.Slop(SystemInformation.DragSize, scale);
+                }
+                return clickSlop;
+            }
+        }
+        // 1.2.2: a tab dragged off its edge floats again here (window position, already fitted to the monitor)
+        public void PlaceAt(Point at)
+        {
+            if (dragging) return;
+            flinging = false; fvx = fvy = 0;
+            homeX = at.X; homeY = at.Y; ClampHome(); SavePos();
+            posX = homeX; posY = homeY; winX = (int)homeX; winY = (int)homeY; lastX = int.MinValue; lastSway = 999;
+            if (IsHandleCreated) Native.SetWindowPos(Handle, IntPtr.Zero, winX, winY, cw, ch, 0x4 | 0x10);
+        }
+        void SavePos() { Settings.Set("pos." + Def.Id, ((int)homeX + Pad) + "," + ((int)homeY + Pad)); Settings.Save(); }   // 1.2.5: the art's top-left, as before the pad
 
         // ---------------------------------------------------------------- mouse: click, drag, catch (v0.10.1)
         // Threading: the frame clock thread never touches beacon state. It only BeginInvokes the tick onto the UI thread
@@ -762,10 +858,18 @@ namespace BotBeacons
             if (e.Button != MouseButtons.Left || sim) return;
             // Was the bubble open when this click started? Clicking the beacon can deactivate the bubble (it closes as
             // "clicked away") just before the click lands; without this the click would reopen it at once.
-            bubbleOpenAtDown = (bubble != null && !bubble.IsDisposed && bubble.Visible) || clock.Elapsed.TotalSeconds - bubbleClosedAt < 0.4;
+            // 1.2.4: only a bubble that is open right now. The beacon never takes activation (MA_NOACTIVATE), so clicking it
+            // can't close the bubble first; the old "closed in the last 0.4 s" rule ate the click after any close.
+            bubbleOpenAtDown = bubble != null && !bubble.IsDisposed && bubble.Visible;
             if (Settings.DevHooks) Log.Write(Def.Id + ": mouse down, bubble " + (bubbleOpenAtDown ? "open" : "closed") + " (" + (int)((clock.Elapsed.TotalSeconds - bubbleClosedAt) * 1000) + " ms since close)" + (flinging ? ", caught mid-fling" : motionU < 1f ? ", caught while settling" : "") + ".");
             Capture = true;
             PointerDown(Cursor.Position, clock.Elapsed.TotalSeconds);
+            if (ClickLog.On)
+            {
+                var cp = PointToClient(Cursor.Position);
+                ClickLog.Write(Def.Id + " down at " + Cursor.Position.X + "," + Cursor.Position.Y + " (window " + cp.X + "," + cp.Y + ", clicks " + e.Clicks + "), bubble " + (bubbleOpenAtDown ? "open" : "closed")
+                    + (caughtFling ? ", caught mid-fling" : caught ? ", held while settling" : "") + ", slop " + ClickSlop + " px.");
+            }
         }
         protected override void OnMouseMove(MouseEventArgs e)
         {
@@ -780,13 +884,17 @@ namespace BotBeacons
             {
                 if (!leftDown)
                 {
-                    // a button-up without our button-down: only reopen if the bubble wasn't just closed by this click
-                    bubbleOpenAtDown = clock.Elapsed.TotalSeconds - bubbleClosedAt < 0.4; dragging = false; caught = false;
-                    if (Settings.DevHooks) Log.Write(Def.Id + ": mouse up without down (" + (bubbleOpenAtDown ? "bubble just closed" : "bubble closed") + ").");
+                    // a button-up without our button-down (the press started on another window): never a click
+                    Capture = false;
+                    if (Settings.DevHooks) Log.Write(Def.Id + ": mouse up without down (ignored).");
+                    ClickLog.Write(Def.Id + " up without down: ignored.");
+                    return;
                 }
-                bool click = PointerUp(clock.Elapsed.TotalSeconds);
+                double held = clock.Elapsed.TotalSeconds - downAt, dist = pressMaxDist;
+                var verdict = PointerVerdict(clock.Elapsed.TotalSeconds);
                 Capture = false;
-                if (click) ClickAction();
+                ClickLog.Write(Def.Id + " up after " + (int)(held * 1000) + " ms, moved " + dist.ToString("0.0", System.Globalization.CultureInfo.InvariantCulture) + " px: " + verdict + ".");
+                if (verdict == ClickVerdict.Click) ClickAction();
             }
             else if (e.Button == MouseButtons.Right)
             {
@@ -794,7 +902,13 @@ namespace BotBeacons
                 // (Show(Point) left it unowned, which put a button on the taskbar).
                 // 1.1.3: one menu per beacon, built on first use and reused; it is disposed only with the beacon
                 if (menu == null || menu.IsDisposed) menu = Program.BuildMenu(this);
-                if (!menu.Visible) menu.Show(this, PointToClient(Cursor.Position));
+                if (!menu.Visible)
+                {
+                    // 1.1.4: open towards the side with room on this monitor (right/down by default)
+                    var at = Cursor.Position;
+                    var dir = Placement.Menu(at, menu.GetPreferredSize(Size.Empty), Screen.FromPoint(at).WorkingArea);
+                    menu.Show(this, PointToClient(at), dir);
+                }
             }
         }
         // the mouse was taken away mid-hold (another window grabbed it, Alt+Tab, ...): let go where it is, no click.
@@ -813,7 +927,7 @@ namespace BotBeacons
 
         void PointerDown(Point c, double t)
         {
-            leftDown = true; dragStart = c; dragTrail.Clear();
+            leftDown = true; dragStart = c; dragTrail.Clear(); dragHomeX = homeX; dragHomeY = homeY; downAt = t; pressMaxDist = 0; caughtFling = false;
             if (CatchClassic)
             {
                 // v0.10: the fling stopped but nothing held the beacon until the cursor moved 4 px, so the next frame drew it
@@ -825,6 +939,7 @@ namespace BotBeacons
             // grab offset from the exact (sub-pixel) spot the beacon is drawn at right now, so it stays under the cursor
             grabDX = posX - c.X; grabDY = posY - c.Y; heldX = posX; heldY = posY;
             caught = flinging || motionU < 1f;
+            caughtFling = flinging;   // 1.2.4: only stopping a slide is "not a click"; a press while it settles still clicks
             if (caught)
             {
                 // a moving beacon: stop the fling and hold it at once (no 4 px dead zone, which would make it lag then jump).
@@ -838,7 +953,10 @@ namespace BotBeacons
         void PointerMove(Point c, double t)
         {
             if (!leftDown) return;
-            if (!dragging && (Math.Abs(c.X - dragStart.X) > 4 || Math.Abs(c.Y - dragStart.Y) > 4)) dragging = true;
+            double dd = Math.Sqrt((double)(c.X - dragStart.X) * (c.X - dragStart.X) + (double)(c.Y - dragStart.Y) * (c.Y - dragStart.Y));
+            if (dd > pressMaxDist) pressMaxDist = dd;
+            // 1.2.4: Euclidean, screen px, the larger of Windows' drag size and 7 px x dpi (was > 4 px on either axis)
+            if (!dragging && ClickRules.PastSlop(dragStart, c, sim ? 4 : ClickSlop)) dragging = true;
             if (!dragging) return;
             if (CatchClassic) { winX = winStart.X + c.X - dragStart.X; winY = winStart.Y + c.Y - dragStart.Y; }
             else
@@ -849,15 +967,39 @@ namespace BotBeacons
             lastX = winX; lastY = winY; if (!caught) play = null;
             // the drawn fraction can't change during a drag (the cursor moves in whole pixels), so moving the window is enough
             if (!sim) Native.SetWindowPos(Handle, IntPtr.Zero, winX, winY, cw, ch, 0x4 | 0x10);
+            // 1.1.4: an open bubble follows the dragged beacon and flips sides at screen edges (a move, not a redraw)
+            if (!sim && bubble != null && !bubble.IsDisposed && bubble.Visible) bubble.Follow(ArtRect);
+            if (!sim) TabsSkin.FloatDragMove(this, c);   // 1.2.2: near an outer screen edge: show where it would dock as a tab
             dragTrail.Add(new KeyValuePair<double, Point>(t, c));
             while (dragTrail.Count > 0 && t - dragTrail[0].Key > 0.1) dragTrail.RemoveAt(0);
         }
         // returns true when the press was a click (not a drag, not a catch)
-        bool PointerUp(double now)
+        bool PointerUp(double now) { return PointerVerdict(now) == ClickVerdict.Click; }
+        ClickVerdict PointerVerdict(double now)
         {
+            if (!leftDown) { dragging = false; caught = false; return ClickVerdict.NoPress; }
             bool wasCaught = caught; caught = false; leftDown = false;
-            if (!dragging) return !wasCaught;
+            // 1.2.4: the cursor never got past the slop: a click (or a long still press), wherever the window went meanwhile
+            if (!dragging || (wasCaught && !caughtFling && pressMaxDist <= (sim ? 4 : ClickSlop)))
+            {
+                var v = ClickRules.Classify(now - downAt, pressMaxDist, caughtFling, sim ? 4 : ClickSlop);
+                if (dragging)
+                {
+                    // held while settling (the hold froze it in place): settle where it is held, then judge the press
+                    dragging = false; dragTrail.Clear();
+                    if (!CatchClassic) { posX = heldX; posY = heldY; Rest(now, heldX, heldY); } else Rest(now);
+                }
+                return v;
+            }
             dragging = false;
+            // 1.2.2: let go within ~24 px of an outer screen edge: this beacon becomes a tab there (no fling). Its floating
+            // spot goes back to where it was before the drag, so Layout > All floating puts it back there
+            if (!sim && TabsSkin.FloatDragEnd(this, Cursor.Position))
+            {
+                dragTrail.Clear(); flinging = false; fvx = fvy = 0;
+                homeX = dragHomeX; homeY = dragHomeY; ClampHome(); SavePos();
+                return ClickVerdict.Drag;
+            }
             // released while moving: keep going with the hand's speed (last ~100 ms), then slide to rest
             float vx = 0, vy = 0;
             while (dragTrail.Count > 0 && now - dragTrail[0].Key > 0.1) dragTrail.RemoveAt(0);
@@ -877,20 +1019,24 @@ namespace BotBeacons
             }
             else if (CatchClassic) Rest(now);
             else Rest(now, heldX, heldY);
-            return false;
+            return ClickVerdict.Drag;
         }
         // what a click does: close an open bubble / open a glowing beacon / ping. Never during a dry run.
         void ClickAction()
         {
             ClickCount++;
             if (sim) return;
-            if (bubbleOpenAtDown)
+            double now = clock.Elapsed.TotalSeconds;
+            var act = ClickRules.Act(bubbleOpenAtDown, downAt - lastOpenClickAt, SystemInformation.DoubleClickTime / 1000.0);
+            ClickLog.Write(Def.Id + " click: " + act + ".");
+            if (act == ClickAct.KeepOpen) { Log.Write(Def.Id + ": second click of a double-click; the bubble stays open."); return; }
+            if (act == ClickAct.Close)
             {
                 if (bubble != null && !bubble.IsDisposed && bubble.Visible) { bubble.CloseReason = "beacon clicked"; bubble.Close(); }
                 Log.Write(Def.Id + ": click closed the bubble.");
             }
-            else if (alert || Unread.Count > 0) OpenBubble(true);
-            else PingClick();
+            // 1.2.3: a click anywhere on the beacon opens its conversation (Ping is on the right-click menu)
+            else { lastOpenClickAt = now; if (bubble == null || bubble.IsDisposed || !bubble.Visible) OpenBubble(true); }
         }
 
         // ---------------------------------------------------------------- dev hook "flingcatch" (v0.10.1)

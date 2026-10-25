@@ -18,6 +18,7 @@ namespace BotBeacons
         public abstract void Refresh2();
         public abstract void FocusInput();
         public abstract void Place(Rectangle beacon);          // beacon = where the beacon is drawn on screen
+        public virtual void Follow(Rectangle beacon) { Place(beacon); }   // 1.1.4: re-place while the beacon is dragged (must be cheap)
         public abstract void DevType(string text);            // dev hook: type into the reply field and press Enter
         public virtual void DevKey(string key) { if (key == "esc") { CloseReason = "Esc"; Close(); } }
         // a new attention call while open: show it in place and return true, or false to have the beacon reopen the bubble
@@ -77,6 +78,7 @@ namespace BotBeacons
 
         public static BubbleBase CreateBubble(BeaconForm owner, PetMessage attention)
         {
+            if (Skin.IsTab(owner)) return new TabCard(owner, attention);   // 1.2.2: a tab's card is its bubble
             if (BubbleStyle() == "cloud") return new CloudBubble(owner, attention);
             return new Bubble(owner, attention);
         }

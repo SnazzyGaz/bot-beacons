@@ -12,7 +12,7 @@ namespace BotBeacons
 {
     static class Program
     {
-        public const string Version = "1.1.3";
+        public const string Version = "1.2.5";
         public static readonly List<BeaconForm> Beacons = new List<BeaconForm>();
         static Relay relay;
         static NotifyIcon tray;
@@ -39,7 +39,7 @@ namespace BotBeacons
                 return;
             }
             bool created;
-            // one pet per Windows session: a second launch (double-click, Run entry + manual start) only tells the
+            // one copy per Windows session: a second launch (double-click, Run entry + manual start) only tells the
             // running one, which logs it, and exits. No duplicate beacons.
             using (var mutex = new Mutex(true, "BotBeacons.SingleInstance", out created))
             {
@@ -67,8 +67,11 @@ namespace BotBeacons
                 Wake.Load();
                 try { var cf = Path.Combine(Settings.Dir, "control.txt"); if (File.Exists(cf) && File.GetLastWriteTimeUtc(cf) < DateTime.UtcNow.AddSeconds(-10)) { File.Delete(cf); Log.Write("Ignored a stale control command from before start-up."); } } catch { }
                 var defs = BeaconConfig.Load();
+                // 1.2.0: tabs added for bots (1.2.5: a new bot answered Add; before: "+ Add tab") are beacons too; tab name overrides apply everywhere
+                foreach (var u in TabStore.Added) if (!defs.Exists(d => string.Equals(d.Id, u.Id, StringComparison.OrdinalIgnoreCase))) defs.Add(TabStore.DefFor(u));
+                foreach (var d in defs) TabStore.ApplyName(d);
                 AutoStart.Sync();
-                Log.Write("Started Bot Beacons v" + Version + (LaunchedAtStartup ? " (at Windows sign-in)" : "") + " with " + defs.Count + " beacon(s), bubble style " + Theme.BubbleStyle() + ", animations " + AnimSettings.Name(AnimSettings.Mode) + ". Secure link: " + (Settings.Link.Valid ? "paired with " + Settings.Link.Peer : "not paired"));
+                Log.Write("Started Bot Beacons v" + Version + (LaunchedAtStartup ? " (at Windows sign-in)" : "") + " with " + defs.Count + " beacon(s), bubble style " + Theme.BubbleStyle() + ", animations " + AnimSettings.Name(AnimSettings.Mode) + ", skin " + Skin.Name + ". Secure link: " + (Settings.Link.Valid ? "paired with " + Settings.Link.Peer : "not paired"));
 
                 for (int i = 0; i < defs.Count; i++) Beacons.Add(new BeaconForm(defs[i], i, defs.Count));
                 foreach (var kv in AttentionStore.Load()) { var sa = Find(kv.Key); if (sa != null) sa.RestoreAttention(kv.Value); else AttentionStore.Set(kv.Key, null); }
@@ -81,6 +84,7 @@ namespace BotBeacons
                 tray.ContextMenuStrip = BuildMenu(null);
                 tray.Visible = true;
                 TrayBadge.Init(tray, tray.Icon);
+                tray.BalloonTipClicked += (s, e) => { if (Updater.Available != null) Updater.UpdateNow(); };   // 1.2.3
                 // left click: open the first visible beacon with news (or show a hidden one that has some); double-click:
                 // pause/resume all beacons. The single click waits out the double-click time so a double-click doesn't also open a bubble.
                 var clickWait = new System.Windows.Forms.Timer { Interval = Math.Max(200, SystemInformation.DoubleClickTime) };
@@ -94,7 +98,7 @@ namespace BotBeacons
                 // a second launch: just note it (no window, no focus change)
                 ThreadPool.RegisterWaitForSingleObject(second, (st, to) => Log.Write("A second copy was started and exited; this one keeps running."), null, -1, false);
                 // screens may still be settling right after sign-in: re-fit saved positions when the layout changes
-                Microsoft.Win32.SystemEvents.DisplaySettingsChanged += (s, e) => { try { main.BeginInvoke((Action)(() => { foreach (var sk in Beacons) sk.RefitToScreens(); })); } catch { } };
+                Microsoft.Win32.SystemEvents.DisplaySettingsChanged += (s, e) => { try { main.BeginInvoke((Action)(() => { foreach (var sk in Beacons) sk.RefitToScreens(); TabsSkin.Relayout(); })); } catch { } };
                 // start-up work runs once the message loop is going (not on main.Shown: the main beacon may be hidden)
                 var boot = new System.Windows.Forms.Timer { Interval = 200 };
                 boot.Tick += (s, e) =>
@@ -103,6 +107,7 @@ namespace BotBeacons
                     Visibility.Apply();
                     if (Visibility.HiddenList.Length > 0 || Visibility.Paused) Log.Write("Hidden beacons: " + (Visibility.Paused ? "all (beacons paused)" : Visibility.HiddenList) + ".");
                     relay.Start();
+                    Updater.Cleanup(); Updater.Start(main);   // 1.2.3: update checks (Updates > Notify / Off)
                     // never pop the pairing window at sign-in (it would take focus); the tray menu has Pair with bots
                     if (!Settings.Link.Valid && !Settings.DevHooks && !LaunchedAtStartup) StartPairing();
                 };
@@ -115,6 +120,13 @@ namespace BotBeacons
                 Application.ApplicationExit += (s, e) => { relay.Stop(); tray.Visible = false; tray.Dispose(); Settings.Save(); Log.Write("Exited."); };
                 Application.Run(main);
             }
+        }
+
+        // 1.2.3: a tray balloon (updates)
+        public static void Balloon(string title, string text, ToolTipIcon icon)
+        {
+            if (tray == null) return;
+            try { tray.ShowBalloonTip(8000, title, text, icon); } catch { }
         }
 
         // tray tooltip (max 63 chars): relay state
@@ -135,13 +147,35 @@ namespace BotBeacons
             var u = FirstUnread();
             if (u != null) { u.OpenBubble(true); return; }
             // nothing visible to read: bring back a hidden beacon that has news (its glow shows; one more click opens it)
-            var h = Beacons.FirstOrDefault(s => !s.Visible && (s.Attention || s.Unread.Count > 0) && (!s.Def.Test || ShowTest));
+            var h = Beacons.FirstOrDefault(s => !TabsSkin.OnScreen(s) && (s.Attention || s.Unread.Count > 0) && (!s.Def.Test || ShowTest));
             if (h != null) { Visibility.Reveal(h); return; }
-            var first = Beacons.FirstOrDefault(s => s.Visible);
+            var first = Beacons.FirstOrDefault(s => TabsSkin.OnScreen(s));
             if (first != null) first.OpenBubble(true);
         }
 
-        static BeaconForm FirstUnread() { foreach (var s in Beacons) if (s.Unread.Count > 0 && s.Visible) return s; return null; }
+        static BeaconForm FirstUnread() { foreach (var s in Beacons) if (s.Unread.Count > 0 && TabsSkin.OnScreen(s)) return s; return null; }
+
+        // 1.2.0: an added tab becomes a beacon straight away (1.2.5: added when a new bot's prompt is answered Add)
+        public static BeaconForm AddBeacon(BeaconDef def)
+        {
+            if (Find(def.Id) != null) return Find(def.Id);
+            TabStore.ApplyName(def);
+            var b = new BeaconForm(def, Beacons.Count, Beacons.Count + 1);
+            Beacons.Add(b);
+            if (!b.IsHandleCreated) { var h = b.Handle; }
+            Visibility.Apply();
+            return b;
+        }
+        // and goes again on Remove tab (never the first beacon: it owns the message loop)
+        public static void RemoveBeacon(BeaconForm b)
+        {
+            int i = Beacons.IndexOf(b); if (i <= 0) { if (i == 0) Visibility.SetHidden(b, true); return; }
+            var bf = b.OpenBubbleForm; if (bf != null) { bf.CloseReason = "tab removed"; bf.Close(); }
+            Beacons.RemoveAt(i);
+            AttentionStore.Set(b.Def.Id, null);
+            b.Hide(); b.Dispose();
+            Visibility.Apply();
+        }
 
         // test beacons ("test": true in beacons.json, e.g. echo) are hidden unless this is on; off by default
         public static bool ShowTest { get { return Settings.Get("showTest", "0") == "1"; } }
@@ -162,12 +196,17 @@ namespace BotBeacons
         static void Route(PetMessage m)
         {
             var target = Find(m.Bot);
-            if (target == null)
-            {
-                foreach (var s in Beacons) if (s.Def.Fallback) target = s;
-                if (target == null) target = Beacons[0];
-                m.Title = (m.Title.Length > 0 ? m.Title + " " : "") + "[" + m.Bot + "]";
-            }
+            if (target != null) { target.Notify(m); return; }
+            if (NewBots.Offer(m)) return;   // 1.2.5: a signed message for a new id: "New bot X wants a tab. Add / Not now"
+            RouteFallback(m);
+        }
+        // an id with no beacon (unverified, or the user said Not now): the fallback beacon shows it, tagged with the id
+        public static void RouteFallback(PetMessage m)
+        {
+            BeaconForm target = null;
+            foreach (var s in Beacons) if (s.Def.Fallback) target = s;
+            if (target == null) target = Beacons[0];
+            m.Title = (m.Title.Length > 0 ? m.Title + " " : "") + "[" + m.Bot + "]";
             target.Notify(m);
         }
 
@@ -178,24 +217,121 @@ namespace BotBeacons
             foreach (var it in old) it.Dispose();
         }
 
-        // 1.1.3: each beacon builds its menu once and reuses it (BeaconForm.ContextMenuFor); the tray keeps its one menu.
-        // Item states and lists are refreshed when the menu or a submenu opens, so a menu is never rebuilt or disposed
-        // while it might still be showing, and its hidden windows don't pile up.
+        // 1.2.3: one menu for every place it opens: a floating beacon, a tab, the shelf's menu button and the tray icon
+        // (from == null for the last two). A short top level (the bots, Reply, Mark all read) and grouped submenus:
+        // Skin, Layout, Sounds, Bots, Updates, then Start with Windows, About and Exit. Each beacon builds its menu once and
+        // reuses it (1.1.3); checks, labels and lists refresh when the menu or a submenu opens, so nothing is rebuilt while
+        // it might be showing. An item that can't do anything right now is hidden, not shown dead.
         public static ContextMenuStrip BuildMenu(BeaconForm from)
         {
             var m = NoTaskbar.Hook(new ContextMenuStrip());   // 1.1.1: menus and submenus never get a taskbar button
+            var opening = new List<Action>();
+            m.Opening += (s, e) => { foreach (var a in opening) a(); };
+
+            // ---- top: the bots / Reply… / Mark all read
             if (from != null)
             {
-                m.Items.Add("Open " + from.Def.Name, null, (s, e) => from.OpenBubble(true));
+                var reply = new ToolStripMenuItem("Reply to " + from.Def.Name + "\u2026", null, (s, e) => from.OpenBubble(true)) { ToolTipText = "Open " + from.Def.Name + "'s conversation" };
+                reply.Font = new Font(reply.Font, FontStyle.Bold);
+                m.Items.Add(reply);
                 m.Items.Add("Ping " + from.Def.Name, null, (s, e) => from.PingClick());
-                m.Items.Add("Hide this beacon", null, (s, e) => Visibility.SetHidden(from, true));
-                m.Items.Add(new ToolStripSeparator());
+                opening.Add(() => reply.Text = (from.Unread.Count > 0 ? "Reply to " + from.Def.Name + "  (" + from.Unread.Count + " unread)" : "Reply to " + from.Def.Name) + "\u2026");
             }
-            var open = new ToolStripMenuItem("Beacons");
-            foreach (var sk in Beacons) { var k = sk; if (k.Def.Test && !ShowTest) continue; open.DropDownItems.Add(k.Def.Name + (k.Unread.Count > 0 ? "  (" + k.Unread.Count + ")" : ""), null, (s, e) => k.OpenBubble(true)); }
-            m.Items.Add(open);
+            else
+            {
+                // the tray / shelf menu lists the bots themselves: click one to open its conversation
+                var bots = new List<ToolStripItem>();
+                int at = m.Items.Count;
+                opening.Add(() =>
+                {
+                    foreach (var it in bots) { m.Items.Remove(it); it.Dispose(); }
+                    bots.Clear();
+                    int i = at;
+                    foreach (var sk in Beacons)
+                    {
+                        var k = sk; if (k.Def.Test && !ShowTest) continue;
+                        string extra = k.Attention ? "  (needs you)" : k.Unread.Count > 0 ? "  (" + k.Unread.Count + " unread)" : "";
+                        var it = new ToolStripMenuItem("Reply to " + k.Def.Name + extra + "\u2026", null, (s2, e2) => k.OpenBubble(true));
+                        m.Items.Insert(i++, it); bots.Add(it);
+                    }
+                });
+            }
+            var markRead = new ToolStripMenuItem("Mark all read", null, (s, e) => { foreach (var k in Beacons.ToArray()) k.MarkRead(); });
+            m.Items.Add(markRead);
+            opening.Add(() => markRead.Visible = Beacons.Any(k => k.CanMarkRead));
+            m.Items.Add(new ToolStripSeparator());
+
+            // ---- Skin ▸ how beacons look: floating or tabs (each beacon can be either), bubble style, animations
+            var skin = new ToolStripMenuItem("Skin");
+            var skB = new ToolStripMenuItem("All floating", null, (s, e) => Skin.Set("floating"));
+            var skT = new ToolStripMenuItem("All tabs", null, (s, e) => Skin.Set("tabs")) { ToolTipText = "Every beacon docks as a tab on a screen edge" };
+            var skM = new ToolStripMenuItem("Mixed (drag a beacon to an edge, or a tab off it)") { Enabled = false };   // a state, shown only while it's true
+            skin.DropDownItems.Add(skB); skin.DropDownItems.Add(skT); skin.DropDownItems.Add(skM);
+            ToolStripMenuItem asTab = null;
+            if (from != null)
+            {
+                asTab = new ToolStripMenuItem("Make " + from.Def.Name + " a tab", null, (s, e) => Skin.SetMode(from, !Skin.IsTab(from)));   // 1.2.2 (same as dragging it to / off an edge)
+                skin.DropDownItems.Add(new ToolStripSeparator()); skin.DropDownItems.Add(asTab);
+            }
+            skin.DropDownItems.Add(new ToolStripSeparator());
+            var styles = new List<ToolStripMenuItem>();
+            foreach (var st in Theme.BubbleStyles) { var k = st; var it = new ToolStripMenuItem("Bubble: " + (k == "card" ? "Card (dark)" : "Cloud"), null, (s, e) => Theme.SetBubbleStyle(k)) { Tag = k }; styles.Add(it); skin.DropDownItems.Add(it); }
+            var anim = new ToolStripMenuItem("Animations");
+            foreach (var md in new[] { AnimMode.Full, AnimMode.Subtle, AnimMode.Off }) { var k = md; anim.DropDownItems.Add(new ToolStripMenuItem(k == AnimMode.Full ? "Full" : k == AnimMode.Subtle ? "Subtle" : "Off (still)", null, (s, e) => AnimSettings.Set(k)) { Tag = k }); }
+            anim.DropDownItems.Add(new ToolStripSeparator());
+            foreach (var fv in new[] { "30", "60", "monitor" }) { var k = fv; anim.DropDownItems.Add(new ToolStripMenuItem(k == "monitor" ? "Frame rate: match display (" + FrameClock.RefreshHz.ToString("0") + " Hz)" : "Frame rate: " + k + " fps", null, (s, e) => FrameClock.SetFps(k)) { Tag = "fps:" + k }); }
+            anim.DropDownOpening += (s, e) =>
+            {
+                foreach (ToolStripItem ti in anim.DropDownItems)
+                {
+                    var it = ti as ToolStripMenuItem; if (it == null) continue;
+                    if (it.Tag is AnimMode) it.Checked = (AnimMode)it.Tag == AnimSettings.Mode;
+                    else if (it.Tag is string) it.Checked = (string)it.Tag == "fps:" + FrameClock.FpsSetting;
+                }
+            };
+            skin.DropDownItems.Add(new ToolStripSeparator()); skin.DropDownItems.Add(anim);
+            skin.DropDownOpening += (s, e) =>
+            {
+                var n = Skin.Name; skB.Checked = n == "floating"; skT.Checked = n == "tabs"; skM.Checked = skM.Visible = n == "mixed";
+                if (asTab != null) asTab.Text = Skin.IsTab(from) ? "Make " + from.Def.Name + " float" : "Make " + from.Def.Name + " a tab";
+                string cur = Theme.BubbleStyle(); foreach (var it in styles) it.Checked = (string)it.Tag == cur;
+            };
+            m.Items.Add(skin);
+
+            // ---- Layout ▸ tabs and docking
+            var layout = new ToolStripMenuItem("Layout");
+            var size = new ToolStripMenuItem("Tab size");
+            foreach (var sz in new[] { "small", "normal", "large" }) { var k = sz; size.DropDownItems.Add(new ToolStripMenuItem(char.ToUpper(k[0]) + k.Substring(1) + (k == "normal" ? " (default)" : ""), null, (s, e) => TabsSkin.SetSize(k)) { Tag = k }); }
+            size.DropDownOpening += (s, e) => { foreach (ToolStripMenuItem it in size.DropDownItems) it.Checked = (string)it.Tag == TabsSkin.SizeSetting; };
+            var hov = new ToolStripMenuItem("Open tabs on");   // 1.2.2
+            var hTab = new ToolStripMenuItem("Click (default)", null, (s, e) => TabsSkin.SetOpen("click"));
+            var hHov = new ToolStripMenuItem("Hover", null, (s, e) => TabsSkin.SetOpen("hover"));
+            hov.DropDownItems.Add(hTab); hov.DropDownItems.Add(hHov);
+            hov.DropDownOpening += (s, e) => { hTab.Checked = !TabsSkin.HoverOpens; hHov.Checked = TabsSkin.HoverOpens; };
+            // 1.2.3: throw a floating beacon at an outer screen edge and it docks there as a tab
+            var thr = new ToolStripMenuItem("Throw to dock", null, (s, e) => TabsSkin.SetThrowToDock(!TabsSkin.ThrowToDock)) { ToolTipText = "Fling a floating beacon at the outer edge of a screen and it becomes a tab there" };
+            var shelf = new ToolStripMenuItem("Open the whole shelf", null, (s, e) => TabsSkin.OpenWholeShelf(from != null && Skin.IsTab(from) ? from : null));   // 1.2.1
+            layout.DropDownItems.Add(size); layout.DropDownItems.Add(hov); layout.DropDownItems.Add(thr);
+            layout.DropDownItems.Add(new ToolStripSeparator()); layout.DropDownItems.Add(shelf);
+            layout.DropDownOpening += (s, e) => { thr.Checked = TabsSkin.ThrowToDock; shelf.Visible = Skin.AnyTabs; layout.DropDownItems[3].Visible = Skin.AnyTabs; };
+            m.Items.Add(layout);
+
+            // ---- Sounds ▸
+            m.Items.Add(SoundMenu(from));
+
+            // ---- Bots ▸ which beacons exist and show, editing, pairing
+            var botsM = new ToolStripMenuItem("Bots");
+            ToolStripMenuItem editTab = null, hideIt = null;
+            if (from != null)
+            {
+                editTab = new ToolStripMenuItem("Edit " + from.Def.Name + "\u2026", null, (s, e) => TabsSkin.Edit(from, Rectangle.Empty)) { ToolTipText = "Name, purpose, colour and tab picture" };
+                hideIt = new ToolStripMenuItem("Hide " + from.Def.Name, null, (s, e) => Visibility.SetHidden(from, true));
+                botsM.DropDownItems.Add(editTab); botsM.DropDownItems.Add(hideIt);
+                botsM.DropDownItems.Add("Test glow on " + from.Def.Name, null, (s, e) => from.Notify(new PetMessage { Id = "local", Bot = from.Def.Id, Text = from.Def.Gist.Length > 0 ? from.Def.Gist : "Local test: the glow works. Click me to clear it.", Title = from.Def.Gist.Length > 0 ? "Local test" : "" }));
+                botsM.DropDownItems.Add(new ToolStripSeparator());
+            }
             // which beacons are on screen (real beacons; the test beacons keep their own switch below)
-            var vis = new ToolStripMenuItem("Show beacons");
+            var vis = new ToolStripMenuItem("Show or hide");
             Action fillVis = () =>
             {
                 ClearItems(vis.DropDownItems);
@@ -203,24 +339,25 @@ namespace BotBeacons
                 foreach (var sk in Beacons)
                 {
                     if (sk.Def.Test) continue; var k = sk;
-                    string extra = k.Attention ? "  (needs attention)" : k.Unread.Count > 0 ? "  (" + k.Unread.Count + " unread)" : "";
+                    string extra = k.Attention ? "  (needs you)" : k.Unread.Count > 0 ? "  (" + k.Unread.Count + " unread)" : "";
                     var it = new ToolStripMenuItem(k.Def.Name + extra) { Checked = !Visibility.IsHidden(k.Def.Id), Enabled = !paused };
                     it.Click += (s2, e2) => Visibility.SetHidden(k, !Visibility.IsHidden(k.Def.Id));
                     vis.DropDownItems.Add(it);
                 }
                 vis.DropDownItems.Add(new ToolStripSeparator());
-                vis.DropDownItems.Add("Show all", null, (s2, e2) => Visibility.SetAll(false));
-                vis.DropDownItems.Add("Hide all", null, (s2, e2) => Visibility.SetAll(true));
-                if (paused) vis.DropDownItems.Add(new ToolStripMenuItem("(beacons paused: double-click the tray icon to resume)") { Enabled = false });
+                if (!paused)
+                {
+                    vis.DropDownItems.Add("Show all", null, (s2, e2) => Visibility.SetAll(false));
+                    vis.DropDownItems.Add("Hide all", null, (s2, e2) => Visibility.SetAll(true));
+                }
+                else vis.DropDownItems.Add(new ToolStripMenuItem("(paused: untick Pause beacons to show them)") { Enabled = false });
             };
             fillVis();
             vis.DropDownOpening += (s, e) => fillVis();
-            m.Items.Add(vis);
-            var pause = new ToolStripMenuItem("Pause beacons (hide all)") { Checked = Visibility.Paused };
-            pause.Click += (s, e) => Visibility.SetPaused(!Visibility.Paused);
-            m.Opening += (s, e) => pause.Checked = Visibility.Paused;
-            m.Items.Add(pause);
-            // test beacons: their own submenu. The main switch, then a one-by-one checklist (used while the switch is on)
+            botsM.DropDownItems.Add(vis);
+            var pause = new ToolStripMenuItem("Pause beacons (hide all)", null, (s, e) => Visibility.SetPaused(!Visibility.Paused));
+            botsM.DropDownItems.Add(pause);
+            // test beacons: the main switch, then a one-by-one checklist (used while the switch is on)
             var testMenu = new ToolStripMenuItem("Test beacons");
             Action fillTest = () =>
             {
@@ -239,39 +376,120 @@ namespace BotBeacons
             };
             fillTest();
             testMenu.DropDownOpening += (s, e) => fillTest();
-            m.Items.Add(testMenu);
-            var style = new ToolStripMenuItem("Bubble style");
-            foreach (var st in Theme.BubbleStyles) { var k = st; style.DropDownItems.Add(new ToolStripMenuItem(k == "card" ? "Card (dark)" : "Cloud", null, (s, e) => Theme.SetBubbleStyle(k)) { Tag = k }); }
-            style.DropDownOpening += (s, e) => { string cur = Theme.BubbleStyle(); foreach (ToolStripMenuItem it in style.DropDownItems) it.Checked = (string)it.Tag == cur; };
-            m.Items.Add(style);
-            var anim = new ToolStripMenuItem("Animations");
-            foreach (var md in new[] { AnimMode.Full, AnimMode.Subtle, AnimMode.Off }) { var k = md; anim.DropDownItems.Add(new ToolStripMenuItem(k == AnimMode.Full ? "Full" : k == AnimMode.Subtle ? "Subtle" : "Off (still)", null, (s, e) => AnimSettings.Set(k)) { Tag = k }); }
-            anim.DropDownItems.Add(new ToolStripSeparator());
-            foreach (var fv in new[] { "30", "60", "monitor" }) { var k = fv; anim.DropDownItems.Add(new ToolStripMenuItem(k == "monitor" ? "Frame rate: match display (" + FrameClock.RefreshHz.ToString("0") + " Hz)" : "Frame rate: " + k + " fps", null, (s, e) => FrameClock.SetFps(k)) { Tag = "fps:" + k }); }
-            anim.DropDownOpening += (s, e) =>
+            botsM.DropDownItems.Add(testMenu);
+            botsM.DropDownItems.Add(new ToolStripSeparator());
+            var pairItem = new ToolStripMenuItem("Pair with bots\u2026", null, (s, e) => StartPairing());
+            botsM.DropDownItems.Add(pairItem);
+            botsM.DropDownItems.Add("Wake hook\u2026", null, (s, e) => OpenWakeForm());
+            botsM.DropDownItems.Add("Open settings folder", null, (s, e) => { try { System.Diagnostics.Process.Start(Settings.Dir); } catch { } });
+            botsM.DropDownOpening += (s, e) =>
             {
-                foreach (ToolStripItem ti in anim.DropDownItems)
-                {
-                    var it = ti as ToolStripMenuItem; if (it == null) continue;
-                    if (it.Tag is AnimMode) it.Checked = (AnimMode)it.Tag == AnimSettings.Mode;
-                    else if (it.Tag is string) it.Checked = (string)it.Tag == "fps:" + FrameClock.FpsSetting;
-                }
+                pause.Checked = Visibility.Paused;
+                pairItem.Text = Settings.Link.Valid ? "Re-pair with bots\u2026" : "Pair with bots\u2026";
+                if (from != null) { bool t = Skin.IsTab(from); editTab.Visible = t; hideIt.Text = "Hide " + from.Def.Name + (t ? " (tab)" : ""); }
             };
-            m.Items.Add(anim);
-            var auto = new ToolStripMenuItem("Start with Windows") { Checked = AutoStart.IsOn };
-            auto.Click += (s, e) => AutoStart.Set(!AutoStart.IsOn);
-            m.Opening += (s, e) => auto.Checked = AutoStart.IsOn;
-            m.Items.Add(auto);
-            m.Opening += (s, e) => { ClearItems(open.DropDownItems); foreach (var sk in Beacons) { var k = sk; if (k.Def.Test && !ShowTest) continue; open.DropDownItems.Add(k.Def.Name + (k.Unread.Count > 0 ? "  (" + k.Unread.Count + ")" : ""), null, (s2, e2) => k.OpenBubble(true)); } };
-            var pairItem = new ToolStripMenuItem(Settings.Link.Valid ? "Re-pair with bots\u2026" : "Pair with bots\u2026", null, (s, e) => StartPairing());
-            m.Opening += (s, e) => pairItem.Text = Settings.Link.Valid ? "Re-pair with bots\u2026" : "Pair with bots\u2026";
-            m.Items.Add(pairItem);
-            m.Items.Add("Wake hook\u2026", null, (s, e) => OpenWakeForm());
-            if (from != null) m.Items.Add("Test glow (local)", null, (s, e) => from.Notify(new PetMessage { Id = "local", Bot = from.Def.Id, Text = from.Def.Gist.Length > 0 ? from.Def.Gist : "Local test: the glow works. Click me to clear it.", Title = from.Def.Gist.Length > 0 ? "Local test" : "" }));
-            m.Items.Add("Open settings folder", null, (s, e) => { try { System.Diagnostics.Process.Start(Settings.Dir); } catch { } });
+            m.Items.Add(botsM);
+
+            // ---- Updates ▸ (1.2.3)
+            var upd = new ToolStripMenuItem("Updates");
+            var updNow = new ToolStripMenuItem("Update now", null, (s, e) => Updater.UpdateNow());
+            updNow.Font = new Font(updNow.Font, FontStyle.Bold);
+            var updCheck = new ToolStripMenuItem("Check for updates now", null, (s, e) => Updater.CheckNow(true));
+            var updOn = new ToolStripMenuItem("Notify me about updates (default)", null, (s, e) => Updater.SetNotify(true));
+            var updOff = new ToolStripMenuItem("Off (don't check)", null, (s, e) => Updater.SetNotify(false));
+            var updInfo = new ToolStripMenuItem("") { Enabled = false };
+            upd.DropDownItems.Add(updNow); upd.DropDownItems.Add(updCheck); upd.DropDownItems.Add(new ToolStripSeparator());
+            upd.DropDownItems.Add(updOn); upd.DropDownItems.Add(updOff); upd.DropDownItems.Add(new ToolStripSeparator());
+            upd.DropDownItems.Add(updInfo);
+            Action fillUpd = () =>
+            {
+                var a = Updater.Available;
+                updNow.Visible = a != null; if (a != null) updNow.Text = "Update now to " + a.Tag + "\u2026";
+                updCheck.Enabled = !Updater.Busy; updCheck.Text = Updater.Busy ? "Checking\u2026" : "Check for updates now";
+                updOn.Checked = Updater.Notify; updOff.Checked = !Updater.Notify;
+                updInfo.Text = "This is v" + Version + (Updater.Status.Length > 0 ? " \u2014 " + Updater.Status : "");
+            };
+            upd.DropDownOpening += (s, e) => fillUpd();
+            m.Items.Add(upd);
+            // a release found: the top-level item says so ("Update available v1.3.0")
+            Font plain = upd.Font, bold = new Font(upd.Font, FontStyle.Bold);
+            opening.Add(() => { var a = Updater.Available; upd.Text = a != null ? "Update available " + a.Tag : "Updates"; upd.Font = a != null ? bold : plain; });
+
             m.Items.Add(new ToolStripSeparator());
+            var auto = new ToolStripMenuItem("Start with Windows", null, (s, e) => AutoStart.Set(!AutoStart.IsOn));
+            m.Items.Add(auto);
+            opening.Add(() => auto.Checked = AutoStart.IsOn);
+            m.Items.Add("About Bot Beacons\u2026", null, (s, e) => ShowAbout());
             m.Items.Add("Exit", null, (s, e) => Application.Exit());
+            // 1.1.4: each submenu opens beside the menu on the side with room (hooked once, after the fill handlers)
+            HookAim(m.Items);
             return m;
+        }
+
+        static void HookAim(ToolStripItemCollection items)
+        {
+            foreach (ToolStripItem it in items)
+            {
+                var di = it as ToolStripMenuItem; if (di == null) continue;
+                var d = di; d.DropDownOpening += (s, e) => AimSubmenu(d);
+                HookAim(d.DropDownItems);
+            }
+        }
+
+        static void ShowAbout()
+        {
+            string st = Updater.Status;
+            MessageBox.Show("Bot Beacons v" + Version + "\n\nLittle desktop beacons that glow when your bots message you.\n\n" +
+                "Updates: " + (Updater.Notify ? "notify" : "off") + (st.Length > 0 ? " \u2014 " + st : "") + "\n" +
+                "Settings folder: " + Settings.Dir + "\n\nhttps://github.com/" + UpdateLogic.Repo,
+                "About Bot Beacons", MessageBoxButtons.OK, MessageBoxIcon.Information);
+        }
+
+        // 1.1.5: Sounds submenu (1.2.3: the set and Off as one choice, then volume, quiet hours, tests)
+        static ToolStripMenuItem SoundMenu(BeaconForm from)
+        {
+            var snd = new ToolStripMenuItem("Sounds");
+            // Custom = each beacon's own sounds (1.1.5), Classic = the Windows system sounds (1.2.0), Off = Sound on unticked
+            var setC = new ToolStripMenuItem("Custom (beacon sounds)", null, (s, e) => { Sound.SetSet("custom"); if (!Sound.On) Sound.SetOn(true); });
+            var setK = new ToolStripMenuItem("Classic (Windows sounds)", null, (s, e) => { Sound.SetSet("classic"); if (!Sound.On) Sound.SetOn(true); });
+            var setO = new ToolStripMenuItem("Off", null, (s, e) => Sound.SetOn(false));
+            snd.DropDownItems.Add(setC); snd.DropDownItems.Add(setK); snd.DropDownItems.Add(setO);
+            snd.DropDownItems.Add(new ToolStripSeparator());
+            var vol = new ToolStripMenuItem("Volume");
+            foreach (var v in Sound.Volumes) { var k = v; vol.DropDownItems.Add(new ToolStripMenuItem(char.ToUpper(k[0]) + k.Substring(1) + (k == "normal" ? " (default)" : ""), null, (s, e) => Sound.SetVolume(k)) { Tag = k }); }
+            vol.DropDownOpening += (s, e) => { foreach (ToolStripMenuItem it in vol.DropDownItems) it.Checked = (string)it.Tag == Sound.Volume; };
+            snd.DropDownItems.Add(vol);
+            var quiet = new ToolStripMenuItem("Quiet hours (23:00\u201307:00)", null, (s, e) => Sound.SetQuietHours(!Sound.QuietHours));
+            snd.DropDownItems.Add(quiet);
+            ToolStripMenuItem mute = null;
+            if (from != null)
+            {
+                mute = new ToolStripMenuItem("Mute " + from.Def.Name, null, (s, e) => Sound.SetMuted(from.Def.Id, !Sound.IsMuted(from.Def.Id)));
+                snd.DropDownItems.Add(mute);
+            }
+            snd.DropDownItems.Add(new ToolStripSeparator());
+            // tests play the beacon's own sounds (the first real beacon's from the tray), even while sound is off
+            Func<BeaconDef> who = () => { if (from != null) return from.Def; foreach (var k in Beacons) if (!k.Def.Test) return k.Def; return Beacons.Count > 0 ? Beacons[0].Def : null; };
+            var t1 = new ToolStripMenuItem("Test message sound", null, (s, e) => { var d = who(); if (d != null) Sound.Preview(d, false); });
+            var t2 = new ToolStripMenuItem("Test attention sound", null, (s, e) => { var d = who(); if (d != null) Sound.Preview(d, true); });
+            snd.DropDownItems.Add(t1); snd.DropDownItems.Add(t2);
+            snd.DropDownOpening += (s, e) =>
+            {
+                setC.Checked = Sound.On && Sound.Set == "custom"; setK.Checked = Sound.On && Sound.Set == "classic"; setO.Checked = !Sound.On;
+                quiet.Checked = Sound.QuietHours;
+                if (mute != null) mute.Checked = Sound.IsMuted(from.Def.Id);
+                bool any = who() != null; t1.Visible = t2.Visible = any;
+                string n = from != null ? " (" + from.Def.Name + ")" : ""; t1.Text = "Test message sound" + n; t2.Text = "Test attention sound" + n;
+            };
+            return snd;
+        }
+
+        static void AimSubmenu(ToolStripMenuItem di)
+        {
+            var parent = di.Owner; if (parent == null || !di.HasDropDownItems) return;
+            var b = parent.Bounds;   // a drop-down's bounds are in screen coordinates
+            if (!(parent is ToolStripDropDown)) b = parent.RectangleToScreen(parent.ClientRectangle);
+            di.DropDownDirection = Placement.Submenu(b, di.DropDown.GetPreferredSize(Size.Empty).Width, Screen.FromRectangle(b).WorkingArea);
         }
 
         public static WakeForm OpenWakeForm()
@@ -292,12 +510,15 @@ namespace BotBeacons
 
         // Developer/test hook, only when devHooks=1 in settings.ini. Write one command into %APPDATA%\BotBeacons\control.txt:
         //   open <beacon> | test <beacon> | reply <beacon> <text> | pair | status | snap | showtest on|off | exit
-        //   ping <beacon> (same as clicking a quiet beacon: wiggle + ping, 30 s limit) | click <beacon> | attention <beacon> <reason> (local test, no relay) | openapp <beacon> (the bubble's Open in app path)
+        //   ping <beacon> (the menu's Ping: wiggle + ping, 30 s limit) | click <beacon> | attention <beacon> <reason> (local test, no relay) | openapp <beacon> (the bubble's Open in app path)
         //   type <beacon> <text> (types into the open bubble's reply field and presses Enter) | key <beacon> esc|enter | bubble card|cloud (theme.json)
         //   fps 30|60|monitor | clock legacy|auto | frametimes <s> (frame interval stats -> frametimes.txt)
         //   hide <beacon> | show <beacon> | hideall | showall | pause on|off | trayclick | trayicons (saves the tray badge icons to snaps\)
         //   autostart on|off | netsim <seconds> (relay connections fail as if offline; 0 = stop) | anim full|subtle|off | act <beacon> <action name|idle|twitch> | fling <beacon> <vx> <vy> (px/s)
         //   frames <beacon> <count> <everyMs> [action]  (saves the beacon's own drawn frames to frames\frames_<id>_NN.png + offsets in frames_<id>.txt)
+        //   throwdock on|off | update check (1.2.3)
+        //   skin beacons|tabs | shelf <beacon> | edittab <beacon> | soundset custom|classic | tabsnap (1.2.0 Tabs skin; tab/shelf pixels -> snaps\)
+        //   card <beacon> | openshelf | tabsize small|normal|large | tabhover tab|shelf (1.2.1)
         //   wake-dialog | wake-snap | wake-test | wake-clear | wake-set  (wake-set reads wake-set.txt: url, key, [auth], [beacon id]; the file is deleted)
         static void CheckControlFile()
         {
@@ -377,7 +598,7 @@ namespace BotBeacons
                 }
                 else if (cmd == "status")
                 {
-                    var lines = new List<string> { "bubbleStyle=" + Theme.BubbleStyle(), "anim=" + AnimSettings.Name(AnimSettings.Mode), "frameClock=" + FrameClock.Backend + " fps=" + FrameClock.FpsSetting + " effective=" + FrameClock.EffectiveFps + " display=" + FrameClock.RefreshHz.ToString("0.#") + "Hz missed=" + FrameClock.Missed, "locked=" + SessionLocked, "relay=" + relay.State, "relayLastOk=" + (relay.LastOk == DateTime.MinValue ? "never" : relay.LastOk.ToString("HH:mm:ss")), "tray=" + (tray != null ? tray.Text : ""), "trayBadge=" + TrayBadge.State, "hidden=" + Visibility.HiddenList, "paused=" + Visibility.Paused, "startup=" + LaunchedAtStartup, "autostart=" + AutoStart.IsOn + " wanted=" + AutoStart.Wanted, "grokApp=" + (System.Diagnostics.Process.GetProcessesByName("Grok Bot").Length > 0 ? "running" : "not running"), "protocol=" + AppLink.ProtocolTarget(), "paired=" + Settings.Link.Valid, "peer=" + Settings.Link.Peer, "rejected=" + relay.Rejected, Wake.StatusLine() };
+                    var lines = new List<string> { "bubbleStyle=" + Theme.BubbleStyle(), "anim=" + AnimSettings.Name(AnimSettings.Mode), "frameClock=" + FrameClock.Backend + " fps=" + FrameClock.FpsSetting + " effective=" + FrameClock.EffectiveFps + " display=" + FrameClock.RefreshHz.ToString("0.#") + "Hz missed=" + FrameClock.Missed, "locked=" + SessionLocked, "relay=" + relay.State, "relayLastOk=" + (relay.LastOk == DateTime.MinValue ? "never" : relay.LastOk.ToString("HH:mm:ss")), "tray=" + (tray != null ? tray.Text : ""), "trayBadge=" + TrayBadge.State, "hidden=" + Visibility.HiddenList, "paused=" + Visibility.Paused, "startup=" + LaunchedAtStartup, "autostart=" + AutoStart.IsOn + " wanted=" + AutoStart.Wanted, "grokApp=" + (System.Diagnostics.Process.GetProcessesByName("Grok Bot").Length > 0 ? "running" : "not running"), "protocol=" + AppLink.ProtocolTarget(), "paired=" + Settings.Link.Valid, "peer=" + Settings.Link.Peer, "rejected=" + relay.Rejected, Wake.StatusLine(), "soundSet=" + Sound.Set, TabsSkin.Status(), "updates=" + (Updater.Notify ? "notify" : "off") + " available=" + (Updater.Available != null ? Updater.Available.Tag : "none") + " status=" + Updater.Status };
                     foreach (var s in Beacons) lines.Add("beacon " + s.Def.Id + " unread=" + s.Unread.Count + " attention=" + s.Attention + " visible=" + s.Visible + " history=" + s.History.Count + " at=" + s.Bounds.X + "," + s.Bounds.Y + "," + s.Bounds.Width + "," + s.Bounds.Height + " drawn=" + s.DrawnPos + " bubble=" + s.BubbleBounds + " idle=" + s.IdleCount + " twitch=" + s.TwitchCount + " fling=" + s.FlingCount + " playing=" + s.Playing + " interval=" + s.TimerInterval);
                     File.WriteAllLines(Path.Combine(Settings.Dir, "status.txt"), lines.ToArray());
                 }
@@ -410,6 +631,18 @@ namespace BotBeacons
                         }
                     }
                 }
+                else if ((cmd == "skin" || cmd == "layout") && parts.Length > 1) Skin.Set(parts[1].Trim().ToLowerInvariant());
+                else if (cmd == "update" && parts.Length > 1 && parts[1].Trim().ToLowerInvariant() == "check") Updater.CheckNow(false);   // 1.2.3: result in status.txt / the log (no balloon)
+                else if (cmd == "throwdock" && parts.Length > 1) TabsSkin.SetThrowToDock(parts[1].Trim().ToLowerInvariant() != "off");   // 1.2.3
+                else if (cmd == "mode" && sk != null && parts.Length > 2) Skin.SetMode(sk, parts[2].Trim().ToLowerInvariant() == "tab");   // 1.2.2: mode <beacon> tab|float
+                else if (cmd == "shelf" && sk != null) TabsSkin.DevOpenShelf(sk);
+                else if (cmd == "card" && sk != null) TabsSkin.DevOpenCard(sk);
+                else if (cmd == "openshelf") TabsSkin.OpenWholeShelf(null);
+                else if (cmd == "tabsize" && parts.Length > 1) TabsSkin.SetSize(parts[1].Trim().ToLowerInvariant());
+                else if ((cmd == "tabopen" || cmd == "tabhover") && parts.Length > 1) TabsSkin.SetOpen(parts[1].Trim().ToLowerInvariant());   // 1.2.2: tabopen click|hover
+                else if (cmd == "edittab" && sk != null) TabsSkin.Edit(sk, Rectangle.Empty);
+                else if (cmd == "soundset" && parts.Length > 1) Sound.SetSet(parts[1].Trim().ToLowerInvariant());
+                else if (cmd == "tabsnap") { string dir = Path.Combine(Settings.Dir, "snaps"); Directory.CreateDirectory(dir); TabsSkin.SaveSnaps(dir); }
                 else if (cmd == "exit") Application.Exit();
             }
             catch (Exception ex) { Log.Write("Control error: " + ex.Message); }

@@ -22,7 +22,7 @@ namespace BotBeacons
             BackColor = Color.FromArgb(24, 25, 28); ForeColor = Color.FromArgb(225, 228, 232); Font = new Font("Segoe UI", 9.75f);
             var dim = Color.FromArgb(140, 146, 155); var field = Color.FromArgb(36, 38, 43);
 
-            var intro = new Label { Left = 16, Top = 12, Width = 440, Height = 36, ForeColor = dim, Text = "When you reply to a beacon, the pet wakes your bot's webhook routine. Only the beacon name and time are sent; never the message." };
+            var intro = new Label { Left = 16, Top = 12, Width = 440, Height = 36, ForeColor = dim, Text = "When you reply to a beacon, the app wakes your bot's webhook routine. Only the beacon name and time are sent; never the message." };
             var l1 = new Label { Left = 16, Top = 56, Width = 110, Text = "Applies to" };
             scope = new ComboBox { Left = 130, Top = 52, Width = 324, DropDownStyle = ComboBoxStyle.DropDownList, BackColor = field, ForeColor = ForeColor, FlatStyle = FlatStyle.Flat };
             scope.Items.Add("All beacons (default)"); scopeIds.Add(null);

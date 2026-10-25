@@ -9,7 +9,7 @@ Keys per --beacon (separated by ";"):
   id       short lowercase id (a-z, 0-9, -), used by beaconctl.py   (required)
   name     shown in the bubble and menus                             (required)
   look     a starter beacon to copy the art and animation from: orb, robot or cat (default orb)
-  agent    the Grok Bot agent id this beacon carries messages for (used by "Open in app")
+  agent    the Grok Bot agent id this beacon carries messages for (used by "Open in chat")
   color    #RRGGBB eye/glow colour (default: the look's colour)
   purpose  one line under the name in the bubble
   gist     one-line sample that "Test glow" shows

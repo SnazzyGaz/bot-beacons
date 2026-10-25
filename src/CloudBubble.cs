@@ -39,12 +39,13 @@ namespace BotBeacons
                 else if (e.Alt && e.KeyCode == Keys.D) { e.SuppressKeyPress = true; Dismiss(); }    // footer link "Dismiss"
             };
             host.Box.MouseWheel += (s, e) => ScrollBy(e.Delta);
+            host.Box.TextChanged += (s, e) => LengthHint();
             host.Deactivate += (s, e) => HostDeactivated();
             host.FormClosed += (s, e) => { if (!closing) { CloseReason = "input closed"; Close(); } };
             Build();
         }
 
-        static string DefaultStatus { get { return Settings.Link.Valid ? "End-to-end encrypted \u00b7 Esc closes" : "Not paired: right-click a beacon \u2192 Pair with bots"; } }
+        static string DefaultStatus { get { return Settings.Link.Valid ? "End-to-end encrypted \u00b7 Esc closes" : "Not paired: right-click a beacon \u2192 Bots \u2192 Pair with bots"; } }
         public override string Style { get { return "cloud"; } }
         public override Rectangle ScreenBounds { get { return new Rectangle(wx, wy, r.W, r.H); } }
 
@@ -109,25 +110,22 @@ namespace BotBeacons
             else if (key == "openapp" || key == "openchat") OpenApp();
         }
 
-        // The trail's last (smallest) circle sits just off the beacon's upper corner on the cloud's side. The cloud goes
-        // to the beacon's left when it fits there (beacons usually live near the right edge), otherwise to its right.
-        public override void Place(Rectangle beacon)
+        // 1.1.4: the cloud goes to the beacon's left and above it by default (beacons usually live near the bottom
+        // right), and flips right and/or below when that side would cross an edge of the beacon's monitor (taskbar
+        // excluded). The trail is mirrored to match, so its smallest circle still lands on the beacon.
+        public override void Place(Rectangle beacon) { PlaceCore(beacon, true); }
+        // while the beacon is dragged: same choice, but only move the window unless the side changed (no redraw per move)
+        public override void Follow(Rectangle beacon) { PlaceCore(beacon, false); }
+        void PlaceCore(Rectangle beacon, bool redraw)
         {
             lastBeacon = beacon; placed = true;
-            var scr = Screen.FromPoint(new Point(beacon.X + beacon.Width / 2, beacon.Y + beacon.Height / 2)).WorkingArea;
-            Func<bool, Point> spot = right =>
-            {
-                m.TrailRight = right; r.Layout(m);
-                var tip = r.Tip; var target = right ? new Point(beacon.X + 22, beacon.Y + 70) : new Point(beacon.Right - 22, beacon.Y + 70);
-                return new Point(target.X - (int)tip.X, target.Y - (int)tip.Y);
-            };
-            var p = spot(true);
-            if (p.X + r.X0 - 34 < scr.Left) p = spot(false);
-            // keep the cloud body on screen (the transparent margins may hang off the edge)
-            int minX = scr.Left - r.X0 + 34, maxX = scr.Right - r.X1 - 34, minY = scr.Top - r.Y0 + 34, maxY = scr.Bottom - r.Y1 - 34;
-            p.X = Math.Max(minX, Math.Min(p.X, maxX)); p.Y = Math.Max(minY, Math.Min(p.Y, maxY));
-            wx = p.X; wy = p.Y;
-            Render();
+            var p = Placement.Cloud(beacon, r.BodyH, Placement.WorkArea(beacon));
+            bool trailRight = !p.Right, flipped = trailRight != m.TrailRight || p.Down != m.TrailBelow;
+            if (flipped) { m.TrailRight = trailRight; m.TrailBelow = p.Down; r.Layout(m); }
+            wx = p.Window.X; wy = p.Window.Y;
+            if (redraw || flipped || !Visible) { Render(); return; }
+            Native.SetWindowPos(Handle, IntPtr.Zero, wx, wy, 0, 0, 0x1 | 0x4 | 0x10);   // NOSIZE | NOZORDER | NOACTIVATE
+            if (!host.IsDisposed) { var tb = r.TextBoxRect; host.Location = new Point(wx + tb.X, wy + tb.Y); }
         }
 
         // ------------------------------------------------------------ drawing (one premultiplied DIB, resized as needed)
@@ -195,10 +193,23 @@ namespace BotBeacons
         }
 
         // ------------------------------------------------------------ input
+        // 1.1.6: say so as soon as the text gets too long for one message (only when that changes, to keep typing light)
+        bool tooLong;
+        void LengthHint()
+        {
+            if (m.Sending || host.IsDisposed) return;
+            bool now = owner.ReplyTooLong(host.Box.Text.Trim());
+            if (now == tooLong) return;
+            tooLong = now;
+            m.Status = now ? "Too long to send: please shorten it" : DefaultStatus; Render();
+        }
+
         void Send()
         {
             if (m.Sending) return;
             string text = host.Box.Text.Trim(); if (text.Length == 0) return;
+            int over = owner.ReplyOverPercent(text);
+            if (over > 0) { tooLong = true; m.Status = Relay.TooLongNotice(over); Render(); return; }   // the text stays in the box
             m.Sending = true; host.Box.ReadOnly = true; m.Status = "Sending\u2026"; Render();
             owner.SendReplyText(text, (ok, err) =>
             {
@@ -235,6 +246,7 @@ namespace BotBeacons
         {
             if (closing || ClosingNow || IsDisposed) return;
             if ((DateTime.Now - opened).TotalMilliseconds < 600) return;   // ignore a stray deactivate right after opening; never grab focus back
+            if (ModalHold.Held || ModalHold.OwnDialogActive()) return;   // 1.2.4: focus went to one of our dialogs
             CloseReason = "clicked away"; Close();
         }
 
@@ -285,7 +297,7 @@ namespace BotBeacons
         {
             FormBorderStyle = FormBorderStyle.None; ShowInTaskbar = false; TopMost = true; StartPosition = FormStartPosition.Manual;
             BackColor = CloudRender.FieldColor; KeyPreview = false;
-            Box = new CueTextBox { BorderStyle = BorderStyle.None, BackColor = CloudRender.FieldColor, ForeColor = CloudRender.TextColor, Font = f, MaxLength = 1500, Dock = DockStyle.Fill };
+            Box = new CueTextBox { BorderStyle = BorderStyle.None, BackColor = CloudRender.FieldColor, ForeColor = CloudRender.TextColor, Font = f, MaxLength = 20000, Dock = DockStyle.Fill };   // 1.1.6: the real cap is the sealed size (see Send)
             Controls.Add(Box);
         }
         protected override CreateParams CreateParams { get { var cp = base.CreateParams; cp.ExStyle |= 0x80 | 0x8; return cp; } }   // toolwindow | topmost

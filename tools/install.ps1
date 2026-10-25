@@ -45,7 +45,7 @@ if ($Exe) {
   $icon = Join-Path (Split-Path $builtExe) "art\icon.ico"
   Say "Using the prebuilt BotBeacons.exe (release zip)."
 } else {
-  if ($Source) { foreach ($n in "build.bat", "beacons.json", "src", "art") { Copy-Item (Join-Path $Source $n) $work -Recurse -Force } }
+  if ($Source) { foreach ($n in "build.bat", "beacons.json", "src", "art", "sounds") { $sp = Join-Path $Source $n; if (Test-Path $sp) { Copy-Item $sp $work -Recurse -Force } } }
   else { Expand-Archive -Path $Bundle -DestinationPath $work -Force }
   $root = $work
   if (-not (Test-Path (Join-Path $root "build.bat"))) { $sub = Get-ChildItem $work -Directory | Select-Object -First 1; if ($sub) { $root = $sub.FullName } }
@@ -63,6 +63,9 @@ if ($running) { Say "Stopping the running copy for the upgrade..."; $running | S
 
 Copy-Item $builtExe (Join-Path $installDir "BotBeacons.exe") -Force
 if (Test-Path $icon) { Copy-Item $icon (Join-Path $installDir "icon.ico") -Force }
+# 1.1.5: alert sounds go next to the exe (release folder sounds\, or dist\sounds\ from the build)
+$snd = @((Join-Path (Split-Path $builtExe) "sounds"), $(if ($root) { Join-Path $root "sounds" })) | Where-Object { $_ -and (Test-Path (Join-Path $_ "*.wav")) } | Select-Object -First 1
+if ($snd) { New-Item -ItemType Directory -Force -Path (Join-Path $installDir "sounds") | Out-Null; Copy-Item (Join-Path $snd "*.wav") (Join-Path $installDir "sounds") -Force }
 Say "Installed to $installDir"
 
 if ($BeaconsJson) {

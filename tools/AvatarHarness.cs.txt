@@ -1,0 +1,25 @@
+// 1.2.0 avatar harness: feeds beaconctl avatar chunk payloads (unsealed JSON lists) to Avatars.Receive, out of order,
+// then a tampered transfer, a bad id and a clear. Linux/mono only (uses the CNG stub). Build and run:
+//   python3 -c "..." makes the JSON with beaconctl.avatar_messages (see docs/TECHNICAL.md, Tabs skin), then
+//   cp tools/MonoCngStub.cs.txt /tmp/CngStub.cs; mcs -langversion:5 -nowarn:618,649,169,414 -main:BotBeacons.AvTest -out:/tmp/avt.exe \
+//     -r:System.Windows.Forms.dll -r:System.Drawing.dll -r:System.Web.Extensions.dll -r:System.Security.dll -r:System.Core.dll src/*.cs /tmp/CngStub.cs tools/AvatarHarness.cs.txt
+//   HOME=/tmp/avh mono /tmp/avt.exe chunks1.json [chunks2.json ...]
+using System; using System.IO; using System.Collections.Generic; using System.Web.Script.Serialization;
+namespace BotBeacons { static class AvTest { static int Main(string[] a) {
+  var js = new JavaScriptSerializer(); int fails = 0;
+  foreach (var f in a) {
+    var list = js.Deserialize<List<Dictionary<string, object>>>(File.ReadAllText(f));
+    list.Reverse(); // out of order on purpose
+    string last = ""; foreach (var p in list) last = Avatars.Receive(p);
+    Console.WriteLine(Path.GetFileName(f) + ": " + last);
+    if (!last.Contains("saved")) fails++;
+    // tamper: flip one chunk
+    var t = js.Deserialize<List<Dictionary<string, object>>>(File.ReadAllText(f));
+    t[0]["data"] = Convert.ToBase64String(new byte[]{1,2,3}) ; t[0]["aid"] = "abcdef";  foreach (var p in t) p["aid"]="abcdef";
+    foreach (var p in t) last = Avatars.Receive(p);
+    Console.WriteLine("  tampered: " + last); if (last.Contains("saved")) fails++;
+  }
+  var bad = new Dictionary<string, object>{{"bot","../x"},{"kind","avatar"}}; Console.WriteLine("  badid: " + Avatars.Receive(bad));
+  Console.WriteLine("file exists: " + File.Exists(Avatars.PathFor("scout")) + " " + Avatars.PathFor("scout"));
+  var clr = new Dictionary<string, object>{{"bot","scout"},{"clear","true"}}; Console.WriteLine("  clear: " + Avatars.Receive(clr) + " exists=" + File.Exists(Avatars.PathFor("scout")));
+  Console.WriteLine(fails == 0 ? "AVATAR OK" : "AVATAR FAIL " + fails); return fails; } } }

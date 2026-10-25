@@ -19,6 +19,7 @@ namespace BotBeacons
         public bool Attention; public string AttentionText = "";
         public List<CloudItem> Items = new List<CloudItem>();
         public bool TrailRight = true;          // true: the beacon is to the right of the cloud
+        public bool TrailBelow;                 // 1.1.4: true: the cloud is below the beacon, so the trail rises from its top
         public bool HoverSend, HoverOpen, HoverDismiss, Sending;
         public int Scroll;                      // pixels scrolled down from the top of the history
         public string FieldText = "";           // only drawn by DrawFieldText (frame dumps); live, the TextBox draws it
@@ -59,9 +60,20 @@ namespace BotBeacons
 
         public int MaxScroll { get { return Math.Max(0, HistTotal - Hist.Height); } }
 
+        // 1.1.4: the body's top-left in the window and the trail tip, for either side and either height; Placement
+        // uses these to try every side without laying the text out again (the body size is the same on every side)
+        public const int Rise = 26;   // extra room above the body for the trail when the cloud is below the beacon
+        public static Point Origin(bool trailRight, bool below) { return new Point(trailRight ? M : M + TrailW, below ? M + Rise : M); }
+        public static PointF TipAt(bool trailRight, bool below, int x0, int y0, int bodyH)
+        {
+            int x1 = x0 + BW, y1 = y0 + bodyH;
+            return new PointF(trailRight ? x1 + 69 : x0 - 69, below ? y0 + 11 : y1 - 11);
+        }
+        public int BodyH { get { return Y1 - Y0; } }
+
         public void Layout(CloudModel m)
         {
-            X0 = m.TrailRight ? M : M + TrailW; Y0 = M; X1 = X0 + BW;
+            var o = Origin(m.TrailRight, m.TrailBelow); X0 = o.X; Y0 = o.Y; X1 = X0 + BW;
             int cx = X0 + Pad, cw = BW - 2 * Pad;
             float y = Y0 - 10;
             NameRect = new RectangleF(cx, y, cw, 26); y += 30;
@@ -104,9 +116,20 @@ namespace BotBeacons
                 OpenRect = new Rectangle(DismissRect.X - 10 - (int)Math.Ceiling(so.Width), FootY - 2, (int)Math.Ceiling(so.Width), 18);
             }
             Y1 = (int)y + 8;
-            W = M + BW + M + TrailW; H = Y1 + M + 26;   // room below for the trail, bumps and the offset shadow
-            if (m.TrailRight) { Trail[0] = new PointF(X1 + 22, Y1 + 20); Trail[1] = new PointF(X1 + 48, Y1 + 3); Trail[2] = new PointF(X1 + 69, Y1 - 11); }
-            else { Trail[0] = new PointF(X0 - 22, Y1 + 20); Trail[1] = new PointF(X0 - 48, Y1 + 3); Trail[2] = new PointF(X0 - 69, Y1 - 11); }
+            W = M + BW + M + TrailW;
+            if (!m.TrailBelow)
+            {
+                H = Y1 + M + Rise;   // room below for the trail, bumps and the offset shadow
+                float sx = m.TrailRight ? X1 : X0, k = m.TrailRight ? 1 : -1;
+                Trail[0] = new PointF(sx + 22 * k, Y1 + 20); Trail[1] = new PointF(sx + 48 * k, Y1 + 3); Trail[2] = new PointF(sx + 69 * k, Y1 - 11);
+            }
+            else
+            {
+                // 1.1.4: mirrored top to bottom: the trail leaves the body's top corner and rises to the beacon
+                H = Y1 + M + 8;      // bumps and the offset shadow below; the trail has its room above (Rise)
+                float sx = m.TrailRight ? X1 : X0, k = m.TrailRight ? 1 : -1;
+                Trail[0] = new PointF(sx + 22 * k, Y0 - 20); Trail[1] = new PointF(sx + 48 * k, Y0 - 3); Trail[2] = new PointF(sx + 69 * k, Y0 + 11);
+            }
             int th = (int)Math.Ceiling(FField.GetHeight()) + 4;
             TextBoxRect = new Rectangle(FieldRect.X + 15, FieldRect.Y + (FieldH - th) / 2, FieldRect.Width - 26, th);
             m.Scroll = Math.Max(0, Math.Min(m.Scroll, MaxScroll));
@@ -155,7 +178,7 @@ namespace BotBeacons
         Bitmap bg; string bgKey = "";
         Bitmap Background(CloudModel m)
         {
-            string key = W + "x" + H + ":" + Y1 + ":" + m.TrailRight;
+            string key = W + "x" + H + ":" + Y1 + ":" + m.TrailRight + ":" + m.TrailBelow;
             if (bg != null && key == bgKey) return bg;
             if (bg != null) bg.Dispose();
             byte[] fill, grown;

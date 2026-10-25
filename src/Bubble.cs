@@ -45,9 +45,10 @@ namespace BotBeacons
             scroller = new Panel { Left = 10, Top = top, Width = Width - 20, AutoScroll = true, BackColor = Bg };
             body = new Label { AutoSize = false, Left = 4, Top = 0, Width = scroller.Width - 24, ForeColor = Fg, BackColor = Bg };
             scroller.Controls.Add(body);
-            input = new TextBox { Left = 14, Width = Width - 28 - 70, BackColor = Panel2, ForeColor = Fg, BorderStyle = BorderStyle.FixedSingle, Font = new Font("Segoe UI", 10f), MaxLength = 1500 };
+            input = new TextBox { Left = 14, Width = Width - 28 - 70, BackColor = Panel2, ForeColor = Fg, BorderStyle = BorderStyle.FixedSingle, Font = new Font("Segoe UI", 10f), MaxLength = 20000 };   // 1.1.6: the real cap is the sealed size (see Send); no silent cut at 1500 characters
             send = new Button { Text = "Send", Width = 62, Height = 26, FlatStyle = FlatStyle.Flat, BackColor = Accent, ForeColor = Color.Black, Font = new Font("Segoe UI Semibold", 9f) };
             send.FlatAppearance.BorderSize = 0; send.Click += (s, e) => Send();
+            input.TextChanged += (s, e) => LengthHint();
             status = new Label { AutoSize = false, Left = 14, Width = Width - 28, Height = 18, ForeColor = Dim, Font = new Font("Segoe UI", 8.5f), AutoEllipsis = true };
             // footer links: small dim text, amber while an attention call is pending (they are what clears it)
             Color linkC = att != null || owner.Attention ? Warn : Dim;
@@ -57,7 +58,7 @@ namespace BotBeacons
             Controls.AddRange(new Control[] { header, purpose, close, scroller, input, send, status, openChat, dismiss });
             AcceptButton = send;
             Refresh2();
-            status.Text = Settings.Link.Valid ? "End-to-end encrypted" : "Not paired: right-click a beacon \u2192 Pair with bots";
+            status.Text = Settings.Link.Valid ? "End-to-end encrypted" : "Not paired: right-click a beacon \u2192 Bots \u2192 Pair with bots";
         }
 
         // Dismiss: mark read (ending an attention call too) and close
@@ -126,20 +127,29 @@ namespace BotBeacons
         public override void FocusInput() { input.Focus(); }
         public override void DevType(string text) { input.Text = text; Send(); }
 
-        // to the right of the beacon, or to its left near the right screen edge
+        // 1.1.4: to the right of the beacon hanging down by default; flips left and/or up when that side would cross
+        // an edge of the beacon's monitor (taskbar excluded), and is nudged on screen only if no side fits
         public override void Place(Rectangle beacon)
         {
-            var scr = Screen.FromPoint(new Point(beacon.X + beacon.Width / 2, beacon.Y + beacon.Height / 2)).WorkingArea;
-            int bx = beacon.Right - 18, by = beacon.Y + 10;
-            if (bx + Width > scr.Right) bx = beacon.X - Width + 18;
-            by = Math.Max(scr.Top, Math.Min(by, scr.Bottom - Height));
-            bx = Math.Max(scr.Left, Math.Min(bx, scr.Right - Width));
-            Location = new Point(bx, by);
+            var p = Placement.Card(beacon, Size, Placement.WorkArea(beacon));
+            if (Location != p.Window) Location = p.Window;
+        }
+
+        // 1.1.6: say so as soon as the text gets too long for one message (only when that changes, to keep typing light)
+        bool tooLong;
+        void LengthHint()
+        {
+            bool now = owner.ReplyTooLong(input.Text.Trim());
+            if (now == tooLong) return;
+            tooLong = now;
+            status.Text = now ? "Too long to send: please shorten it." : (Settings.Link.Valid ? "End-to-end encrypted" : status.Text);
         }
 
         void Send()
         {
             string text = input.Text.Trim(); if (text.Length == 0) return;
+            int over = owner.ReplyOverPercent(text);
+            if (over > 0) { tooLong = true; status.Text = Relay.TooLongNotice(over); return; }   // the text stays in the box
             input.Enabled = false; send.Enabled = false; status.Text = "Sending\u2026";
             owner.SendReplyText(text, (ok, err) =>
             {
@@ -160,6 +170,7 @@ namespace BotBeacons
             base.OnDeactivate(e);
             if (ClosingNow || IsDisposed) return;
             if ((DateTime.Now - opened).TotalMilliseconds < 600) return;   // a stray deactivate right after opening: ignore, never grab focus back
+            if (ModalHold.Held || ModalHold.OwnDialogActive()) return;   // 1.2.4: focus went to one of our dialogs
             CloseReason = "clicked away"; Close();
         }
         protected override void OnKeyDown(KeyEventArgs e) { base.OnKeyDown(e); if (e.KeyCode == Keys.Escape) { CloseReason = "Esc"; Close(); } }

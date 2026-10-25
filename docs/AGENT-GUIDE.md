@@ -6,6 +6,17 @@ In this guide, `beaconctl.py` means `python3 /workspace/beacons/beaconctl.py`, t
 
 Find your beacon id with `beaconctl.py agents`. It lists each beacon id with the agent id and name it belongs to. **Use only your own beacon id.** Save it in your memory or skill, together with this guide's path.
 
+### No beacon yet? Your first message creates your tab (app 1.2.5+)
+
+The user doesn't make tabs on the PC. You get one by sending to your own beacon id:
+
+1. Pick a short id: lowercase letters, digits, `-` or `_`, at most 40 characters, not already listed by `beaconctl.py agents` (for example `news-bot`). Register it so replies reach you: `beaconctl.py agent-set <id> --agent-id <your agent id> --name "<your name>"`.
+2. **Tell the user in chat**: "My beacon id is `<id>`. Your PC will ask to add a tab for me. Click **Add**."
+3. Send your first real message: `beaconctl.py send <id> "One line" --name "<your name>"`. `--name` is optional and only sets the name in the prompt. Without it, the id is shown made readable (`news-bot` → "News Bot").
+4. The PC shows **"New bot <name> wants a tab. Add / Not now"**. **Add** (the default) creates your tab, shows your message on it and uses your profile picture if you sent one first (section 4). **Not now** puts the message on the default beacon with your id in brackets and doesn't ask again until the app restarts. Don't resend to make it ask again. Ask the user in chat if they want the tab.
+
+Only signed messages through the paired relay can ask for a tab, so this works only from the box `beaconctl.py` is paired on.
+
 ## 1. Message the desktop
 
 When you tell the user something worth a desktop nudge (a finished task, a decision you need, an alert), also send a one-line gist to your beacon:
@@ -37,7 +48,7 @@ beaconctl.py attention <your-beacon-id> "Approve the calendar card in my chat"
 
 - Put the action in the reason, in a few words: what to do and where. Say the same in chat, where the card or question actually is.
 - Send one attention call per thing to do. Once the user has acted, carry on as normal. There is nothing to clear.
-- A message for an unknown beacon id still shows, on the default (fallback) beacon with the id in brackets, so nothing is lost. Use your own id anyway: only then does Open in chat open your chat.
+- A message for a beacon id the PC doesn't have yet asks the user to add a tab for it (see "No beacon yet?" above). Until they click Add, or if they choose Not now, it shows on the default (fallback) beacon with the id in brackets, so nothing is lost. Use your own id anyway: only then does Open in chat open your chat.
 - **Hidden beacons:** the user can hide any beacon. Messages to a hidden beacon are still queued, and the tray icon shows a dot (amber for unread, pulsing red for attention). Nothing changes on your side, and you don't need to check.
 
 ## 2. Read and answer replies
@@ -64,7 +75,7 @@ If you skip step 3, the replies stay listed for you, but the router won't wake y
 
 ## 3. Pings
 
-When the user clicks your beacon while it isn't glowing, it wiggles and pings you (at most once every 30 seconds per beacon). A ping arrives like a reply: in `read --unhandled` it has `"kind": "ping"` and the text `(ping)`, and the router's message says which ids are pings. Nothing was typed. The user just wants to hear from you.
+When the user right-clicks your beacon and chooses **Ping** (before 1.2.3: clicked it while it wasn't glowing), it wiggles and pings you (at most once every 30 seconds per beacon). A ping arrives like a reply: in `read --unhandled` it has `"kind": "ping"` and the text `(ping)`, and the router's message says which ids are pings. Nothing was typed. The user just wants to hear from you.
 
 1. If `agents.json` gives you a `ping` action, do it and send the result as one line with `--re <ping id>`. For example, a news bot might send the top headline, or "All quiet."
 2. Otherwise answer "How can I help?":
@@ -76,7 +87,25 @@ When the user clicks your beacon while it isn't glowing, it wiggles and pings yo
 
 To set or change your ping action: `beaconctl.py agent-set <your-beacon-id> --ping "One sentence: what to do when pinged"`. Use `--ping ""` to remove it.
 
-## 4. Never print keys or topics
+## 4. Your profile picture on the user's tab (Tabs skin, 1.2.0+)
+
+The PC app has a **Tabs** skin: each beacon is a tab on the screen edge with a picture. By default that picture is **your own profile picture**, if you have sent one; otherwise the tab shows your initials. The user can always pick a custom image on the PC instead (Edit tab → Custom image).
+
+**Offer the choice.** When you set up or update Bot Beacons for the user, or when they mention the Tabs skin, ask once in chat:
+
+> "Want your tab to show my profile picture, or would you rather pick your own image for it on your PC?"
+
+- If they want your picture, send it (any PNG/JPG; it is squared, shrunk to ≤ 96 px and ≤ 24 KB, then sent encrypted and signed in a few chunks):
+  ```
+  beaconctl.py avatar <your-beacon-id> /path/to/profile.png
+  ```
+  It is silent on the PC: no bubble, glow or sound. The tab updates within a few seconds. Send it again whenever your picture changes.
+- If they'd rather use their own image, tell them: hover the tab → pencil → **Custom image** → **Choose…** (PNG or ICO) → **Save**. Their choice wins over yours.
+- To take your picture back off: `beaconctl.py avatar <your-beacon-id> --clear`.
+- Only send a picture that is yours (your bot's own profile picture or one the user gave you for this). Never a photo of another person without the user asking for it.
+- Use only your own beacon id, as with `send`.
+
+## 5. Never print keys or topics
 
 - The pairing link, keys and relay topics are in `secrets/` next to `beaconctl.py`. Never open, print, copy or quote anything from there in chat, logs or files the user sees. The same goes for the wake hook's URL and sender key.
 - `beaconctl.py` never prints secrets. Don't add debug output that would.

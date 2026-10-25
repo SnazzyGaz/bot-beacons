@@ -12,6 +12,13 @@ secrets/
 agents.local.json
 *.local.json
 .env
+link.json
+*.link
+ctl/
+pair-code.txt
+wake-set.txt
+relay-cursor.txt
+wake.json
 
 # app runtime files (they live in %APPDATA%\BotBeacons, but just in case)
 settings.ini

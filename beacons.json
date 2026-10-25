@@ -1,5 +1,5 @@
 {
-  "version": 1,
+  "version": 2,
   "bubble": "card",
   "anim": {
     "idleEvery": [
@@ -65,6 +65,8 @@
   "beacons": [
     {
       "id": "orb",
+      "sound": "orb.wav",
+      "attentionSound": "orb_attention.wav",
       "name": "Orb",
       "purpose": "Starter beacon: a little glowing orb",
       "gist": "All quiet. Click me any time to ping my bot.",
@@ -159,6 +161,8 @@
     },
     {
       "id": "robot",
+      "sound": "robot.wav",
+      "attentionSound": "robot_attention.wav",
       "name": "Robo",
       "purpose": "Starter beacon: a small robot",
       "gist": "Task finished: your report is ready in chat.",
@@ -244,6 +248,8 @@
     },
     {
       "id": "cat",
+      "sound": "cat.wav",
+      "attentionSound": "cat_attention.wav",
       "name": "Kit",
       "purpose": "Starter beacon: a curious cat",
       "gist": "Found something you asked me to watch for.",

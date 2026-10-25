@@ -1,0 +1,137 @@
+// Box check of the v0.10.3 placement math (Placement.cs + CloudRender geometry). No windows are created.
+// Build: mcs -out:/tmp/ph.exe -r:System.Drawing.dll -r:System.Windows.Forms.dll Placement.cs CloudRender.cs PlacementHarness.cs
+using System; using System.Collections.Generic; using System.Drawing; using System.Windows.Forms;
+namespace BotBeacons
+{
+    static class PlacementHarness
+    {
+        static int fails, cases, clamps, maxNudge; static string worst = "";
+        static void Clamp(Placed p, string at) { if (!p.Clamped) return; clamps++; int n = Math.Max(Math.Abs(p.Nudge.X), Math.Abs(p.Nudge.Y)); if (n > maxNudge) { maxNudge = n; worst = at; } }
+        static void Check(bool ok, string what) { cases++; if (!ok) { fails++; if (fails <= 40) Console.WriteLine("  FAIL " + what); } }
+        // Screen.FromPoint: the monitor containing the point, else the nearest one
+        static Rectangle Pick(Rectangle[] bounds, Rectangle[] work, Point c)
+        {
+            int best = 0; long bd = long.MaxValue;
+            for (int i = 0; i < bounds.Length; i++)
+            {
+                var b = bounds[i]; if (b.Contains(c)) return work[i];
+                long dx = Math.Max(0, Math.Max(b.Left - c.X, c.X - b.Right + 1)), dy = Math.Max(0, Math.Max(b.Top - c.Y, c.Y - b.Bottom + 1)), d = dx * dx + dy * dy;
+                if (d < bd) { bd = d; best = i; }
+            }
+            return work[best];
+        }
+        static Rectangle MenuRect(Point p, Size s, ToolStripDropDownDirection d)
+        {
+            int x = (d == ToolStripDropDownDirection.BelowLeft || d == ToolStripDropDownDirection.AboveLeft) ? p.X - s.Width : p.X;
+            int y = (d == ToolStripDropDownDirection.AboveLeft || d == ToolStripDropDownDirection.AboveRight) ? p.Y - s.Height : p.Y;
+            return new Rectangle(x, y, s.Width, s.Height);
+        }
+
+        static void Main()
+        {
+            const int SW = 143, SH = 236;   // a beacon window (art sprites are 143x236)
+            // monitor layouts: bounds and work areas (taskbar excluded)
+            var layouts = new List<KeyValuePair<string, Rectangle[][]>>();
+            layouts.Add(new KeyValuePair<string, Rectangle[][]>("one 1920x1080, taskbar bottom", new[] { new[] { new Rectangle(0, 0, 1920, 1080) }, new[] { new Rectangle(0, 0, 1920, 1040) } }));
+            layouts.Add(new KeyValuePair<string, Rectangle[][]>("two: primary + second LEFT at (-1920,-312)", new[] {
+                new[] { new Rectangle(0, 0, 1920, 1080), new Rectangle(-1920, -312, 1920, 1080) },
+                new[] { new Rectangle(0, 0, 1920, 1040), new Rectangle(-1920, -312, 1920, 1080) } }));
+            layouts.Add(new KeyValuePair<string, Rectangle[][]>("two: primary + 2560x1440 RIGHT at (1920,200), taskbar top", new[] {
+                new[] { new Rectangle(0, 0, 1920, 1080), new Rectangle(1920, 200, 2560, 1440) },
+                new[] { new Rectangle(0, 0, 1920, 1040), new Rectangle(1920, 248, 2560, 1392) } }));
+            var cards = new[] { new Size(350, 230), new Size(350, 520) };
+            var r = new CloudRender(); var m = new CloudModel { Name = "Test Beacon", Gist = "Watching the build" };
+            for (int i = 0; i < 6; i++) m.Items.Add(new CloudItem { Time = "15:0" + i, Who = i % 2 == 0 ? "Orb" : "You", Text = "A message long enough to wrap over a couple of lines in the history list " + i });
+            r.Layout(m); int realH = r.BodyH;
+            var bodies = new[] { 150, realH, 470 };
+            Console.WriteLine("cloud body heights tested: " + string.Join(", ", bodies) + " (the middle one from a real CloudRender layout)");
+            // the renderer's trail tip must match the geometry Placement used, on all four sides
+            foreach (bool tr in new[] { true, false }) foreach (bool below in new[] { false, true })
+            {
+                m.TrailRight = tr; m.TrailBelow = below; r.Layout(m);
+                var tip = CloudRender.TipAt(tr, below, r.X0, r.Y0, r.BodyH);
+                Check(r.Tip == tip, "renderer tip mismatch tr=" + tr + " below=" + below);
+                Check(r.BodyH == realH, "body height changes with side");
+                Check(r.Trail[0].Y - r.TrailR[0] - 6 >= 0 && r.Trail[0].Y + r.TrailR[0] + 6 + 8 <= r.H, "trail outside window tr=" + tr + " below=" + below);
+                Check(r.Y0 >= 40 && r.H - r.Y1 >= 50, "bump/shadow margins tr=" + tr + " below=" + below);
+            }
+            var menuSizes = new[] { new Size(232, 330) }; const int subW = 260;
+            foreach (var L in layouts)
+            {
+                var B = L.Value[0]; var W = L.Value[1];
+                int c0 = cases, f0 = fails; var tally = new Dictionary<string, int>();
+                Action<string> tick = k => { int n; tally.TryGetValue(k, out n); tally[k] = n + 1; };
+                for (int mon = 0; mon < W.Length; mon++)
+                {
+                    var wa = W[mon];
+                    foreach (int over in new[] { 0, 20 })
+                    {
+                        int[] xs = { wa.Left - over, wa.Left + wa.Width / 2 - SW / 2, wa.Right - SW + over }, ys = { wa.Top - over, wa.Top + wa.Height / 2 - SH / 2, wa.Bottom - SH + over };
+                        string[] xn = { "left", "mid", "right" }, yn = { "top", "mid", "bottom" };
+                        for (int ix = 0; ix < 3; ix++) for (int iy = 0; iy < 3; iy++)
+                        {
+                            var sk = new Rectangle(xs[ix], ys[iy], SW, SH);
+                            var area = Pick(B, W, new Point(sk.X + SW / 2, sk.Y + SH / 2));
+                            string at = "mon" + mon + " " + yn[iy] + "-" + xn[ix] + (over > 0 ? " (20px over)" : "");
+                            Check(area == wa, at + ": wrong monitor");
+                            foreach (var cs in cards)
+                            {
+                                var p = Placement.Card(sk, cs, area);
+                                Check(area.Contains(p.Body), at + " card " + cs.Height + ": off screen " + p.Body);
+                                Clamp(p, at + " card " + cs.Height); Check(p.Nudge.X == 0, at + " card nudged sideways");
+                                // beside the beacon, overlapping its window by at most the 18 px tuck
+                                int ov = Math.Max(0, Math.Min(p.Body.Right, sk.Right) - Math.Max(p.Body.Left, sk.Left));
+                                Check(ov <= 18, at + " card: covers the beacon by " + ov + " px");
+                                if (ix == 2) Check(!p.Right, at + " card should open left"); if (ix == 0) Check(p.Right, at + " card should open right");
+                                if (iy == 2) Check(!p.Down, at + " card " + cs.Height + " should open up");
+                                tick("card " + (p.Right ? "R" : "L") + (p.Down ? "D" : "U"));
+                            }
+                            foreach (int bh in bodies)
+                            {
+                                var p = Placement.Cloud(sk, bh, area);
+                                Check(area.Contains(p.Body), at + " cloud " + bh + ": off screen " + p.Body);
+                                Clamp(p, at + " cloud " + bh); Check(p.Nudge.X == 0, at + " cloud nudged sideways");
+                                bool tr = !p.Right; var o = CloudRender.Origin(tr, p.Down); var tip = CloudRender.TipAt(tr, p.Down, o.X, o.Y, bh);
+                                var ts = new PointF(p.Window.X + tip.X, p.Window.Y + tip.Y);
+                                Check(sk.Contains((int)ts.X, (int)ts.Y), at + " cloud " + bh + ": trail tip " + ts + " misses the beacon " + sk);
+                                Check(tr ? p.Body.Right <= ts.X + 1 : p.Body.Left >= ts.X - 1, at + " cloud: trail points the wrong way");
+                                if (ix == 0) Check(p.Right, at + " cloud should open right"); if (ix == 2) Check(!p.Right, at + " cloud should open left");
+                                if (iy == 0) Check(p.Down, at + " cloud should open below");
+                                tick("cloud " + (p.Right ? "R" : "L") + (p.Down ? "D" : "U"));
+                            }
+                            foreach (var ms in menuSizes)
+                            {
+                                foreach (var cur in new[] { new Point(sk.X + SW / 2, sk.Y + SH / 2), new Point(Math.Max(wa.Left, sk.X + 6), Math.Max(wa.Top, sk.Y + 6)), new Point(Math.Min(wa.Right - 1, sk.Right - 6), Math.Min(wa.Bottom - 1, sk.Bottom - 6)) })
+                                {
+                                    var d = Placement.Menu(cur, ms, area); var mr = MenuRect(cur, ms, d);
+                                    Check(area.Contains(mr), at + " menu at " + cur + " " + d + ": off screen " + mr);
+                                    var sd = Placement.Submenu(mr, subW, area);
+                                    var sr = sd == ToolStripDropDownDirection.Right ? new Rectangle(mr.Right, mr.Y, subW, 10) : new Rectangle(mr.Left - subW, mr.Y, subW, 10);
+                                    Check(sr.Left >= area.Left && sr.Right <= area.Right, at + " submenu " + sd + " off screen");
+                                    tick("menu " + d);
+                                }
+                            }
+                        }
+                    }
+                }
+                // drag sweep on the primary: every 9 px across and down, as if dragged; nothing ever leaves the screen
+                var pw = W[0];
+                for (int x = pw.Left - 20; x <= pw.Right - SW + 20; x += 9) for (int y = pw.Top - 20; y <= pw.Bottom - SH + 20; y += 9)
+                {
+                    var sk = new Rectangle(x, y, SW, SH); var area = Pick(B, W, new Point(x + SW / 2, y + SH / 2));
+                    var c = Placement.Cloud(sk, realH, area); Check(area.Contains(c.Body) && c.Nudge.X == 0, "sweep cloud " + sk.Location); Clamp(c, "sweep cloud " + sk.Location);
+                    { bool tr = !c.Right; var o = CloudRender.Origin(tr, c.Down); var tp = CloudRender.TipAt(tr, c.Down, o.X, o.Y, realH); Check(sk.Contains(c.Window.X + (int)tp.X, c.Window.Y + (int)tp.Y), "sweep cloud tip misses " + sk.Location); }
+                    var k = Placement.Card(sk, cards[0], area); Check(area.Contains(k.Body) && k.Nudge.X == 0, "sweep card " + sk.Location); Clamp(k, "sweep card " + sk.Location);
+                }
+                Console.WriteLine(L.Key + ": " + (cases - c0) + " checks, " + (fails - f0) + " failed; vertical nudges so far " + clamps + " (largest " + maxNudge + " px: " + worst + ")");
+                var keys = new List<string>(tally.Keys); keys.Sort(); Console.WriteLine("  sides used: " + string.Join(", ", keys.ConvertAll(k => k + "=" + tally[k]).ToArray()));
+            }
+            // last resort: a screen too small for the card on any side -> nudged inside, flagged Clamped
+            var tiny = new Rectangle(0, 0, 640, 480); var t = Placement.Card(new Rectangle(250, 120, SW, SH), new Size(350, 520), tiny);
+            Console.WriteLine("too-small screen (640x480, card 350x520): clamped=" + t.Clamped + " top-left " + t.Body.Location + " (expect clamped, top at 0)");
+            Check(t.Clamped && t.Body.Top == 0 && t.Body.Left >= 0 && t.Body.Right <= 640, "clamp fallback");
+            Console.WriteLine(fails == 0 ? "ALL " + cases + " CHECKS PASSED" : fails + " of " + cases + " checks FAILED");
+            Environment.Exit(fails == 0 ? 0 : 1);
+        }
+    }
+}

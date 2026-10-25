@@ -5,11 +5,19 @@
   beaconctl.py status                       is a link set up (never prints keys or topics)
   beaconctl.py probe [--wait S]             silent health check: the PC app (1.1.3+) answers with a signed ack,
                                            shows nothing on any beacon. Exit 0 = OK, 1 = no answer within S s (default 30)
-  beaconctl.py send BEACON TEXT [--title T]  send an encrypted, signed message that pops up on beacon BEACON
+  beaconctl.py send BEACON TEXT [--title T]  send an encrypted, signed message that pops up on beacon BEACON.
+                                           TEXT "-" reads stdin. One message must fit in 3900 bytes once encrypted:
+                                           about 2,700 plain English characters, about 900 for Chinese/Japanese, 680 emoji.
+                                           Longer ones are refused (exit 1, nothing sent): send a summary instead.
+                                           A new BEACON id (no tab yet) asks the user "New bot NAME wants a tab. Add / Not now";
+                                           --name NAME sets the name shown (default: the id, e.g. news-bot -> News Bot)
   beaconctl.py send --as BEACON TEXT         same thing, other spelling ("notify" is an alias of "send")
   beaconctl.py send BEACON TEXT --re ID      ...as an answer to reply ID (or to a ping)
   beaconctl.py attention BEACON REASON       "needs attention" call to action: stronger alert + "!" badge on the beacon,
-                                           the bubble shows REASON and an "Open in app" button for the beacon's agent chat
+                                           the bubble shows REASON and an "Open in chat" link to the beacon's agent chat
+  beaconctl.py avatar BEACON FILE [--size 96]  send the bot's profile picture for BEACON (1.2.0 Tabs skin): squared,
+                                           shrunk to <= SIZE px and ~24 KB, sent in signed encrypted chunks. Silent on the PC
+  beaconctl.py avatar BEACON --clear         remove it again (the tab goes back to initials / the user's custom image)
   beaconctl.py read [--since new|1h|all] [--bot BOT] [--json]
                                            verify + decrypt replies from the PC. "new" (default) = only
                                            unread ones, with full replay/staleness checks; 1h/all = history
@@ -34,7 +42,7 @@
 
 Data lives in $BEACONS_HOME (default: the folder this script is in): agents.json, and secrets/ (mode 0700/0600).
 Nothing secret is ever printed.
-Protocol: see docs/README.md ("Security model").
+Protocol: see docs/TECHNICAL.md ("Security model").
 """
 import argparse, base64, hashlib, hmac, json, os, secrets, sys, time, urllib.error, urllib.request, urllib.parse
 from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
@@ -66,6 +74,10 @@ ALPHA = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789"
 MAX_AGE_MS, MAX_FUTURE_MS = 15 * 60 * 1000, 2 * 60 * 1000
 B2P, P2B = "b2p", "p2b"
 UA = {"User-Agent": "beaconctl/1.0"}
+# 1.1.6: ntfy.sh turns a body over 4096 bytes into a file attachment, which the receiver can't read as a message, while
+# the sender still gets HTTP 200. So every envelope we post must fit, measured on the final sealed bytes (title, escaping
+# and base64 included), with a margin.
+MAX_ENVELOPE = 3900
 
 def b64(b): return base64.b64encode(b).decode()
 def ub64(s): return base64.b64decode(s)
@@ -87,11 +99,43 @@ def load_link():
 def seal(key, direction, payload):
     ek, mk = H(key, "bot-beacons enc v1"), H(key, "bot-beacons mac v1")
     iv = secrets.token_bytes(16)
-    p = padding.PKCS7(128).padder(); data = p.update(json.dumps(payload, separators=(",", ":")).encode()) + p.finalize()
+    # ensure_ascii=False: UTF-8 as is (1.1.5 and older wrote \uXXXX: 6 bytes per accented letter, 12 per emoji)
+    raw = json.dumps(payload, separators=(",", ":"), ensure_ascii=False).encode("utf-8")
+    p = padding.PKCS7(128).padder(); data = p.update(raw) + p.finalize()
     e = Cipher(algorithms.AES(ek), modes.CBC(iv)).encryptor(); ct = e.update(data) + e.finalize()
     ivs, cts = b64(iv), b64(ct)
     tag = b64(H(mk, f"v1|{direction}|{ivs}|{cts}"))
     return json.dumps({"v": 1, "d": direction, "iv": ivs, "ct": cts, "tag": tag}, separators=(",", ":"))
+
+class TooLong(Exception):
+    def __init__(self, n): super().__init__(n); self.n = n
+
+def utf8_clean(s):
+    """replace anything that isn't valid UTF-8 (e.g. stray bytes from the shell) with U+FFFD, so sealing never fails"""
+    return s.encode("utf-8", "replace").decode("utf-8") if isinstance(s, str) else s
+
+def seal_checked(key, direction, payload):
+    """seal and refuse (TooLong) if the final envelope would not fit in one relay message"""
+    env = seal(key, direction, payload); n = len(env.encode("utf-8"))
+    if n > MAX_ENVELOPE: raise TooLong(n)
+    return env
+
+def fit_chars(key, direction, payload, field="text"):
+    """how many leading characters of payload[field] fit (binary search on the real sealed size)"""
+    t = payload.get(field, ""); lo, hi = 0, len(t)
+    while lo < hi:
+        mid = (lo + hi + 1) // 2
+        try: seal_checked(key, direction, dict(payload, **{field: t[:mid]})); lo = mid
+        except TooLong: hi = mid - 1
+    return lo
+
+def too_long_message(key, payload, n):
+    text = payload.get("text", ""); k = fit_chars(key, B2P, payload)
+    if k == 0:
+        return (f"Not sent: the title and other fields alone are too long for one beacon message ({n} bytes once encrypted, "
+                f"limit {MAX_ENVELOPE}). Use a short title (a few words).")
+    return (f"Not sent: the message is too long for one beacon pop-up ({n} bytes once encrypted, limit {MAX_ENVELOPE}). "
+            f"About {k} of its {len(text)} characters would fit. Send a shorter summary (the user can open the chat for details).")
 
 def open_env(key, direction, body):
     """returns (payload, None) or (None, reason)"""
@@ -236,16 +280,85 @@ def cmd_send(a):
     a.bot = bot
     l = load_link()
     text = a.text if a.text != "-" else sys.stdin.read()
-    if len(text.encode()) > 2400: sys.exit("Message too long for one ping (max ~2400 bytes). Send a summary.")
+    text = utf8_clean(text)
     p = {"id": secrets.token_hex(12), "ts": now_ms(), "from": "bot", "bot": a.bot, "text": text}
     if getattr(a, "attention", False):
         p["kind"] = "attention"
         ag = load_agents().get(a.bot)
-        if ag: p["agent"] = ag["agentId"]   # which chat "Open in app" opens
-    if a.title: p["title"] = a.title
+        if ag: p["agent"] = ag["agentId"]   # which chat "Open in chat" opens
+    if a.title: p["title"] = utf8_clean(a.title)
+    if getattr(a, "name", None): p["name"] = utf8_clean(a.name)[:32]   # 1.2.5: shown in "New bot NAME wants a tab" (new ids only)
     if getattr(a, "re", None): p["re"] = a.re
-    st = post(l["server"], l["down"], seal(l["key"], B2P, p))
+    # 1.1.6: refuse loudly (exit 1, nothing posted) rather than split: one alert should be one short pop-up, and parts
+    # would arrive seconds apart (relay rate limit), could be lost or reordered one by one, and would each sound an alert
+    try: env = seal_checked(l["key"], B2P, p)
+    except TooLong as e: sys.exit(too_long_message(l["key"], p, e.n))
+    st = post(l["server"], l["down"], env)
     print(f"sent {'attention call ' if p.get('kind') == 'attention' else ''}to {a.bot}: HTTP {st}, id {p['id']}")
+
+AVATAR_MAX = 24 * 1024     # the PC accepts up to 32 KB; stay well under
+AVATAR_CHUNK = 1800        # raw bytes per message: seals to ~3,630-3,720 bytes (bot id 3-64 chars), under MAX_ENVELOPE
+AVATAR_MIN_CHUNK = 768     # 24 KB / 768 = 32 chunks, the most the PC accepts (Avatars.MaxChunks)
+
+def avatar_png(path, size=96):
+    """Square-crop, shrink and compress an image to a small PNG (bytes). Needs Pillow."""
+    try:
+        from PIL import Image
+    except ImportError:
+        sys.exit("avatar needs Pillow: pip install pillow")
+    import io
+    size = max(32, min(256, int(size)))
+    try:
+        im = Image.open(path); im.load()
+    except Exception as e:
+        sys.exit(f"Could not read {path}: {e.__class__.__name__}")
+    im = im.convert("RGBA")
+    w, h = im.size; s = min(w, h)
+    im = im.crop(((w - s) // 2, (h - s) // 2, (w - s) // 2 + s, (h - s) // 2 + s))
+    for side in (size, 80, 64, 48, 32):
+        if side > size: continue
+        sm = im.resize((side, side), Image.LANCZOS)
+        for quant in (False, True):
+            buf = io.BytesIO()
+            (sm.quantize(colors=128, method=Image.Quantize.FASTOCTREE) if quant else sm).save(buf, "PNG", optimize=True)
+            if buf.tell() <= AVATAR_MAX: return buf.getvalue(), side
+    sys.exit("Could not get the picture under 24 KB. Try a simpler image.")
+
+def avatar_messages(bot, png, chunk=None):
+    """The chunk payloads for one avatar transfer (not sealed yet)."""
+    chunk = chunk or AVATAR_CHUNK
+    aid = secrets.token_hex(8); sha = hashlib.sha256(png).hexdigest()
+    parts = [png[i:i + chunk] for i in range(0, len(png), chunk)]
+    return [{"id": secrets.token_hex(12), "ts": now_ms(), "from": "bot", "bot": bot, "kind": "avatar", "aid": aid,
+             "seq": i, "n": len(parts), "size": len(png), "sha256": sha, "data": b64(c)} for i, c in enumerate(parts)]
+
+def avatar_envelopes(key, bot, png):
+    """Seal every chunk with the 1.1.6 size check before anything is posted. If a chunk would not fit (a very long
+    beacon id), shrink the chunk size and try again; give up (TooLong) only below AVATAR_MIN_CHUNK."""
+    chunk = AVATAR_CHUNK
+    while True:
+        try: return [seal_checked(key, B2P, p) for p in avatar_messages(bot, png, chunk)]
+        except TooLong as e:
+            if chunk <= AVATAR_MIN_CHUNK: raise
+            chunk = max(AVATAR_MIN_CHUNK, chunk - 200)
+
+def cmd_avatar(a):
+    l = load_link()
+    if a.clear:
+        p = {"id": secrets.token_hex(12), "ts": now_ms(), "from": "bot", "bot": a.bot, "kind": "avatar", "clear": "true"}
+        try: env = seal_checked(l["key"], B2P, p)
+        except TooLong as e: sys.exit(f"Not sent: the beacon id is too long for one message ({e.n} bytes once encrypted, limit {MAX_ENVELOPE}).")
+        st = post(l["server"], l["down"], env)
+        print(f"avatar cleared for {a.bot}: HTTP {st}"); return
+    if not a.file: sys.exit("Give the picture: avatar BEACON FILE  (or --clear)")
+    png, side = avatar_png(a.file, a.size)
+    # 1.2.2: every sealed chunk must fit in one relay message (1.1.6 rule). All are sealed first, so nothing is posted
+    # unless the whole picture fits; the timestamps are a few ms apart, far inside the 15-minute freshness window
+    try: envs = avatar_envelopes(l["key"], a.bot, png)
+    except TooLong as e: sys.exit(f"Not sent: an avatar chunk would be {e.n} bytes once encrypted (limit {MAX_ENVELOPE}). Use a shorter beacon id.")
+    for env in envs:
+        post(l["server"], l["down"], env)
+    print(f"avatar sent for {a.bot}: {side}x{side} PNG, {len(png)} bytes in {len(envs)} chunk(s)")
 
 def load_cursor():
     try:
@@ -269,6 +382,8 @@ def read_replies(since=None, strict=True):
         if strict:
             if o["id"] in cur["handled"]: continue
             cur["handled"][o["id"]] = o.get("time", 0); cur["since"] = max(cur["since"], o.get("time", 0))
+        if o.get("attachment"):   # over 4096 bytes: the relay stored it as a file (the 1.1.6 app never sends one)
+            bad.append((o["id"], "too large for the relay (arrived as a file)")); continue
         p, why = open_env(l["key"], P2B, o.get("message", ""))
         if p is not None:
             if strict: why = check_fresh(p, seen)
@@ -438,7 +553,11 @@ def cmd_echo(a):
         for g in pending(b, "echo"):
             if g.get("kind") == "ping": continue   # pings are answered with: pong echo
             p = {"id": secrets.token_hex(12), "ts": now_ms(), "from": "bot", "bot": "echo", "text": "Echo: " + g["text"], "re": g["id"]}
-            post(l["server"], l["down"], seal(l["key"], B2P, p)); n += 1
+            try: env = seal_checked(l["key"], B2P, p)
+            except TooLong:   # test beacon: shorten the echo to fit rather than fail
+                k = fit_chars(l["key"], B2P, dict(p, text=p["text"] + "\u2026")) - 1
+                env = seal_checked(l["key"], B2P, dict(p, text=p["text"][:max(0, k)] + "\u2026"))
+            post(l["server"], l["down"], env); n += 1
             g["handled"] = True; g["handled_at"] = now_ms(); save_inbox(b)
     print(f"echoed {n} repl{'y' if n == 1 else 'ies'}" + (f" ({len(bad)} rejected)" if bad else ""))
 
@@ -449,8 +568,10 @@ def cmd_pong(a):
         b, bad = sync_inbox()
         for g in pending(b, a.bot):
             if g.get("kind") != "ping": continue
-            p = {"id": secrets.token_hex(12), "ts": now_ms(), "from": "bot", "bot": a.bot, "text": a.text, "re": g["id"]}
-            post(l["server"], l["down"], seal(l["key"], B2P, p)); n += 1
+            p = {"id": secrets.token_hex(12), "ts": now_ms(), "from": "bot", "bot": a.bot, "text": utf8_clean(a.text), "re": g["id"]}
+            try: env = seal_checked(l["key"], B2P, p)
+            except TooLong as e: sys.exit(too_long_message(l["key"], p, e.n))
+            post(l["server"], l["down"], env); n += 1
             g["handled"] = True; g["handled_at"] = now_ms(); save_inbox(b)
     print(f"answered {n} ping{'s' if n != 1 else ''} on {a.bot}" + (f" ({len(bad)} rejected)" if bad else ""))
 
@@ -485,9 +606,10 @@ def main():
     p = sp.add_parser("probe"); p.add_argument("--wait", type=int, default=30); p.set_defaults(f=cmd_probe)
     for name in ("send", "notify"):
         p = sp.add_parser(name); p.add_argument("bot", nargs="?"); p.add_argument("text"); p.add_argument("--as", dest="as_", metavar="BEACON")
-        p.add_argument("--title"); p.add_argument("--re"); p.set_defaults(f=cmd_send)
-    p = sp.add_parser("attention"); p.add_argument("bot"); p.add_argument("text"); p.add_argument("--title")
+        p.add_argument("--title"); p.add_argument("--re"); p.add_argument("--name", help="your bot's name, for the new-tab prompt"); p.set_defaults(f=cmd_send)
+    p = sp.add_parser("attention"); p.add_argument("bot"); p.add_argument("text"); p.add_argument("--title"); p.add_argument("--name")
     p.set_defaults(f=cmd_send, as_=None, re=None, attention=True)
+    p = sp.add_parser("avatar"); p.add_argument("bot", metavar="BEACON"); p.add_argument("file", nargs="?"); p.add_argument("--size", type=int, default=96); p.add_argument("--clear", action="store_true"); p.set_defaults(f=cmd_avatar)
     p = sp.add_parser("pong"); p.add_argument("bot"); p.add_argument("--text", default=DEFAULT_PONG); p.set_defaults(f=cmd_pong)
     p = sp.add_parser("read"); p.add_argument("--since", default="new"); p.add_argument("--bot"); p.add_argument("--json", action="store_true"); p.add_argument("--unhandled", action="store_true"); p.set_defaults(f=cmd_read)
     p = sp.add_parser("mark-handled"); p.add_argument("ids", nargs="+"); p.add_argument("--bot"); p.set_defaults(f=cmd_mark)

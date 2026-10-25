@@ -16,6 +16,11 @@ namespace BotBeacons
     static class Crypto
     {
         public const string BotToPet = "b2p", PetToBot = "p2b";
+        // 1.1.6: ntfy.sh turns a body over 4096 bytes into a file attachment that the other side can't read, while the
+        // sender still sees success. Every envelope we post must fit; measured on the final sealed UTF-8 bytes, with a margin.
+        // Same limit as beaconctl.py (MAX_ENVELOPE). See docs/TECHNICAL.md, "Message size".
+        public const int MaxEnvelopeBytes = 3900;
+        public static int Utf8Bytes(string s) { return Encoding.UTF8.GetByteCount(s ?? ""); }
         static readonly JavaScriptSerializer json = new JavaScriptSerializer();
 
         public static byte[] Random(int n) { var b = new byte[n]; using (var r = RandomNumberGenerator.Create()) r.GetBytes(b); return b; }

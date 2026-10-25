@@ -15,6 +15,9 @@ namespace BotBeacons
         public string Kind = "";      // "" = normal message, "attention" = the user must act in the Grok Bot app, "ping" = user ping
         public string AgentId = "";   // attention: which Grok Bot agent chat "Open in chat" should open
         public bool FromUser;
+        public bool Verified;   // 1.2.5: came over the paired relay (decrypted, signed, fresh, not a replay). Only these can ask for a new tab
+        public string BotName = "";   // 1.2.5: optional "name" a bot sends (shown in the new-tab prompt)
+        public bool Silent;   // 1.1.5: shown as usual but never plays a sound (status/heartbeat/probe-ack kinds, or "silent": true)
         public bool IsAttention { get { return Kind == "attention"; } }
         public DateTime Time = DateTime.Now;
     }
@@ -149,12 +152,21 @@ namespace BotBeacons
                 handled[nid] = ntime; changed = true;
                 long cur; if (ntime > 0 && (!long.TryParse(Settings.Get("since", "0"), out cur) || ntime > cur)) Settings.Set("since", ntime.ToString());
                 string reason;
-                var p = Crypto.Open(link.Key, Crypto.BotToPet, Crypto.Str(o, "message"), out reason);
-                if (p != null) reason = CheckFresh(p);
+                Dictionary<string, object> p = null;
+                if (o.ContainsKey("attachment")) reason = "too large for the relay (arrived as a file)";   // over 4096 bytes
+                else
+                {
+                    p = Crypto.Open(link.Key, Crypto.BotToPet, Crypto.Str(o, "message"), out reason);
+                    if (p != null) reason = CheckFresh(p);
+                }
                 if (reason != null) { Rejected++; Log.Write("Rejected relay message " + nid + ": " + reason); continue; }
                 // 1.1.3: a silent health probe (beaconctl probe). Log-only: no bubble, glow, sound or wake; answered with a signed ack
                 if (Crypto.Str(p, "kind") == "probe") { SendProbeAck(Crypto.Str(p, "id")); continue; }
-                var m = new PetMessage { Id = Crypto.Str(p, "id"), Bot = Crypto.Str(p, "bot"), Title = Crypto.Str(p, "title"), Text = Crypto.Str(p, "text"), Kind = Crypto.Str(p, "kind"), AgentId = Crypto.Str(p, "agent") };
+                // 1.2.0: a bot's profile picture, in chunks (beaconctl avatar). Silent: stored for the Tabs skin, nothing shown or played
+                if (Crypto.Str(p, "kind") == "avatar") { Log.Write("Relay: " + Avatars.Receive(p) + "."); continue; }
+                var m = new PetMessage { Id = Crypto.Str(p, "id"), Bot = Crypto.Str(p, "bot"), Title = Crypto.Str(p, "title"), Text = Crypto.Str(p, "text"), Kind = Crypto.Str(p, "kind"), AgentId = Crypto.Str(p, "agent"), BotName = Crypto.Str(p, "name"), Verified = true };   // reason == null: Crypto.Open + CheckFresh passed
+                string rawKind = m.Kind.ToLowerInvariant();
+                m.Silent = rawKind == "probe-ack" || rawKind == "status" || rawKind == "heartbeat" || Crypto.Str(p, "silent").ToLowerInvariant() == "true";
                 if (m.Kind != "attention") m.Kind = "";   // bots can only send normal messages or attention calls
                 long ts; if (long.TryParse(Crypto.Str(p, "ts"), out ts)) m.Time = new DateTime(1970, 1, 1, 0, 0, 0, DateTimeKind.Utc).AddMilliseconds(ts).ToLocalTime();
                 Log.Write("Accepted " + (m.IsAttention ? "attention call" : "message") + " for '" + m.Bot + "' (" + m.Text.Length + " chars).");   // content is never logged
@@ -228,6 +240,32 @@ namespace BotBeacons
             });
         }
 
+        static Dictionary<string, object> ReplyPayload(string id, long ts, string bot, string text, string inReplyTo, string kind)
+        {
+            var payload = new Dictionary<string, object> {
+                { "id", id }, { "ts", ts }, { "from", "user" },
+                { "bot", bot }, { "text", text }, { "re", inReplyTo ?? "" } };
+            if (kind.Length > 0) payload["kind"] = kind;
+            return payload;
+        }
+
+        // 1.1.6: the exact size the sealed reply would have (the size never depends on the key, the IV or the id's value)
+        public static int ReplyEnvelopeBytes(string bot, string text, string inReplyTo)
+        {
+            var payload = ReplyPayload(Crypto.Hex(new byte[12]), Crypto.NowMs(), bot, text, inReplyTo, "");
+            return Crypto.Utf8Bytes(Crypto.Seal(new byte[32], Crypto.PetToBot, payload));
+        }
+
+        // 1.1.6: 0 if the reply fits in one relay message, else roughly what share of the text (in %, 1..99) has to go
+        public static int ReplyOverPercent(string bot, string text, string inReplyTo)
+        {
+            if (ReplyEnvelopeBytes(bot, text, inReplyTo) <= Crypto.MaxEnvelopeBytes) return 0;
+            int lo = 0, hi = text.Length;   // longest prefix that fits
+            while (lo < hi) { int mid = (lo + hi + 1) / 2; if (ReplyEnvelopeBytes(bot, text.Substring(0, mid), inReplyTo) <= Crypto.MaxEnvelopeBytes) lo = mid; else hi = mid - 1; }
+            return Math.Max(1, Math.Min(99, (int)Math.Ceiling((text.Length - lo) * 100.0 / text.Length)));
+        }
+        public static string TooLongNotice(int pct) { return "Too long to send: shorten it by about " + pct + "%. Nothing was sent."; }
+
         static void Send(string bot, string text, string inReplyTo, string kind, Action<bool, string> done)
         {
             ThreadPool.QueueUserWorkItem(_ =>
@@ -236,11 +274,14 @@ namespace BotBeacons
                 {
                     var link = Settings.Link; if (!link.Valid) throw new Exception("not paired yet");
                     string id = Crypto.Hex(Crypto.Random(12)); long ts = Crypto.NowMs();
-                    var payload = new Dictionary<string, object> {
-                        { "id", id }, { "ts", ts }, { "from", "user" },
-                        { "bot", bot }, { "text", text }, { "re", inReplyTo ?? "" } };
-                    if (kind.Length > 0) payload["kind"] = kind;
-                    Http.Post(link.Server, link.Up, Crypto.Seal(link.Key, Crypto.PetToBot, payload));
+                    string env = Crypto.Seal(link.Key, Crypto.PetToBot, ReplyPayload(id, ts, bot, text, inReplyTo, kind));
+                    int size = Crypto.Utf8Bytes(env);
+                    if (size > Crypto.MaxEnvelopeBytes)   // 1.1.6: never post what the relay would turn into an unreadable attachment
+                    {
+                        Log.Write("Reply not sent to '" + bot + "': too long (" + size + " bytes sealed, limit " + Crypto.MaxEnvelopeBytes + ").");
+                        done(false, "too long to send; shorten it"); return;
+                    }
+                    Http.Post(link.Server, link.Up, env);
                     Log.Write((kind == "ping" ? "Ping" : "Reply") + " sent to '" + bot + "' (" + text.Length + " chars).");
                     done(true, null);
                     try { Wake.Queue(bot, id, ts, kind == "ping"); } catch (Exception wex) { Log.Write("Wake queue error: " + wex.GetType().Name); }
@@ -289,7 +330,7 @@ namespace BotBeacons
         }
     }
 
-    // One-time pairing with a bot host using a short code (see docs\README.md, "Pairing").
+    // One-time pairing with a bot host using a short code (see docs\TECHNICAL.md, "Security model" > "Pairing").
     class Pairing
     {
         public string Code { get; private set; }

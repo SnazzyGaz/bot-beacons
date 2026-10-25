@@ -63,8 +63,28 @@ Overlays are drawn in the listed order on top of the base. The animation can mov
 | `color` / `tint` | glow colour / colour of the eyes and chest light |
 | `fallback: true` | receives messages for unknown ids (one beacon) |
 | `test: true` | hidden unless tray → **Test beacons → Show test beacons** is on (the `echo` beacon) |
+| `sound` / `attentionSound` | optional WAV file names for its message and attention sounds (see **Sounds** below) |
 
 Leave the file's `"version"` alone. When an update ships a higher version, the app saves your file as `beacons.v<N>.bak.json` and installs the new default.
+
+## Sounds
+
+Each beacon plays a short sound when a message or attention call arrives. The attention sound is the same voice played as a double pulse, a little brighter.
+
+The app looks for a beacon's sound in this order:
+1. The beacon's `sound` / `attentionSound` file.
+2. The theme default (`default.wav` / `default_attention.wav`).
+3. A Windows system sound.
+
+Files are looked up in `%APPDATA%\BotBeacons\sounds\` first, then in `sounds\` next to the exe. The starter sounds are original and synthesised by `tools/make_sounds.py`:
+- `orb`: glassy shimmer
+- `robot`: two-note bleep
+- `cat`: tiny "mrrp" trill
+- `default`: soft chime
+
+**Sound sets (1.2.0).** Right-click → Sound → **Sounds: Custom** uses the files above (the default); **Sounds: Classic** uses the Windows system sounds instead (Asterisk for messages, Exclamation for attention). In the Tabs skin each tab's Edit window can pick Custom, Classic or Off for that one beacon.
+
+Use 16-bit PCM WAVs so the volume setting can scale them; other formats play at their own level. Keep them short, 0.3 to 0.9 s.
 
 ## The `anim` block
 
@@ -108,3 +128,7 @@ An accessory is just another overlay: draw it on the 150 × 190 canvas, put the 
 ## Making new art
 
 `themes/starter/make_starter_art.py` (Python 3 + Pillow) draws the whole starter pack: `python3 themes/starter/make_starter_art.py` rewrites `art/`. The anchor points (body centre, eyes, chest light, antenna) are at the top of the script. Copy it as a starting point for your own pack, keep the same canvas size, and rebuild with `build.bat` to embed new defaults.
+
+## The Tabs skin (1.2.0)
+
+Right-click → **Skin** → **Tabs** shows each beacon as a tab on a screen edge instead of floating art. A tab's picture is, in order: the user's custom image (Edit tab → Custom image), else the bot's own profile picture (sent with `beaconctl.py avatar`, see AGENT-GUIDE.md), else the beacon's initials on its colour. The tab's colour strip is the beacon's `color` unless the user picked another. beacons.json needs nothing new; the user's edits live in `%APPDATA%\BotBeacons\tabs.json` and win over it. The floating beacon art (layers, `anim`, accessories) is untouched and is still what the Beacons skin shows. Since 1.2.1 the user picks the tab size (Small / Normal / Large). Send tab pictures square and at least 128 px so they stay sharp at Large.

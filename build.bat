@@ -41,6 +41,11 @@ if errorlevel 1 (
   echo Built, but dist\BotBeacons.exe is in use ^(is Bot Beacons running?^). Exit it and build again.
   exit /b 1
 )
+rem 1.1.5: alert sounds live next to the exe in dist\sounds\ (a missing folder just means Windows sounds)
+if exist sounds\*.wav (
+  if not exist dist\sounds mkdir dist\sounds
+  copy /y sounds\*.wav dist\sounds\ >nul
+)
 echo.
 echo Built dist\BotBeacons.exe
 endlocal

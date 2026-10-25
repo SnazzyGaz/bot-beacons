@@ -28,10 +28,17 @@ namespace BotBeacons
         public static bool IsHidden(string id) { return Hidden.Contains(id); }
         public static string HiddenList { get { return string.Join(",", Hidden.OrderBy(x => x).ToArray()); } }
 
+        public static bool AttentionShows(BeaconForm s) { return s.Attention && !Paused; }
+
         // should this beacon be on screen right now?
         public static bool ShouldShow(BeaconForm s)
         {
-            if (Paused || IsHidden(s.Def.Id)) return false;
+            if (Paused) return false;
+            // 1.2.4: a pending attention call brings the beacon (or its tab) on screen even if it is hidden or a hidden
+            // test beacon: the sound always played for hidden beacons, but there was nothing to see. It goes back once
+            // the call is resolved (Open in chat / Dismiss). Pause still clears the desktop (tray badge only).
+            if (AttentionShows(s)) return true;
+            if (IsHidden(s.Def.Id)) return false;
             return !s.Def.Test || Program.ShowTest;
         }
 
@@ -72,14 +79,19 @@ namespace BotBeacons
             Apply();
         }
 
+        // 1.2.4: tools/ClickHarness.cs.txt (headless) records what Apply would show/hide instead of touching windows
+        public static Action<BeaconForm, bool> ApplyHook = null;
+
         public static void Apply()
         {
+            if (ApplyHook != null) { foreach (var s in Program.Beacons) ApplyHook(s, ShouldShow(s) && !Skin.IsTab(s)); return; }
             foreach (var s in Program.Beacons)
             {
-                bool show = ShouldShow(s);
+                bool show = ShouldShow(s) && !Skin.IsTab(s);   // 1.2.2: per beacon; a tab's floating window stays hidden (TabsSkin draws it)
                 if (show && !s.Visible) s.ShowBeacon();
                 else if (!show && s.Visible) s.HideBeacon();
             }
+            TabsSkin.Sync();
             TrayBadge.Update();
         }
     }
@@ -129,7 +141,7 @@ namespace BotBeacons
 
         static void Set(Icon i) { if (Tray != null && i != null && !ReferenceEquals(i, lastIcon)) { Tray.Icon = i; lastIcon = i; } }
 
-        // dev hook: save the badge variants (the pet's own icons, not the screen)
+        // dev hook: save the badge variants (the app's own icons, not the screen)
         public static void SaveIcons(string dir)
         {
             var list = new[] { plain, dot, attOn, attOff }; var names = new[] { "plain", "unread", "attention_on", "attention_off" };
@@ -139,8 +151,8 @@ namespace BotBeacons
         public static void Update()
         {
             if (Tray == null) return;
-            var hiddenAtt = Program.Beacons.Where(s => !s.Visible && s.Attention && (!s.Def.Test || Program.ShowTest)).ToList();
-            var hiddenUnread = Program.Beacons.Where(s => !s.Visible && s.Unread.Count > 0 && (!s.Def.Test || Program.ShowTest)).ToList();
+            var hiddenAtt = Program.Beacons.Where(s => !TabsSkin.OnScreen(s) && s.Attention && (!s.Def.Test || Program.ShowTest)).ToList();
+            var hiddenUnread = Program.Beacons.Where(s => !TabsSkin.OnScreen(s) && s.Unread.Count > 0 && (!s.Def.Test || Program.ShowTest)).ToList();
             string tip;
             if (hiddenAtt.Count > 0)
             {

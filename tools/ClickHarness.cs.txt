@@ -1,0 +1,450 @@
+// 1.2.4 harness: floating-beacon click rules (jitter, a moving window, long presses, catches, double-clicks), the
+// solid hit pad, the shelf's dialog hold (focus to our own window never collapses it), the grouped shelf header,
+// and "every alert path sets the visual state" (real BeaconForms, headless; Visibility.ApplyHook records shows).
+// Build (from the repo root; NoTaskbar.Hook needs SetWindowLong, which mono lacks, so a scratch copy drops it):
+//   d=$(mktemp -d); cp src/*.cs $d/; cp tools/MonoCngStub.cs.txt $d/CngStub.cs; cp tools/ClickHarness.cs.txt $d/ClickHarness.cs
+//   sed -i 's/NoTaskbar.Hook(new ContextMenuStrip())/new ContextMenuStrip()/' $d/*.cs
+//   RES=""; for f in art/*.png; do RES="$RES -resource:$f,$(basename $f)"; done
+//   mcs -langversion:5 -nowarn:618,649,169,414,219 -main:BotBeacons.ClickHarness -out:$d/ch.exe $RES -resource:beacons.json,beacons.json \
+//     -r:System.Windows.Forms.dll -r:System.Drawing.dll -r:System.Web.Extensions.dll -r:System.Security.dll -r:System.Core.dll $d/*.cs
+//   HOME=$(mktemp -d) mono $d/ch.exe                  (pure checks)
+//   HOME=$(mktemp -d) xvfb-run -a mono $d/ch.exe alerts   (+ the alert paths, needs a display for WinForms)
+using System;
+using System.Collections.Generic;
+using System.Drawing;
+using System.Drawing.Imaging;
+using System.IO;
+using System.Linq;
+using System.Runtime.InteropServices;
+
+namespace BotBeacons
+{
+    static class ClickHarness
+    {
+        static int ok, bad;
+        static void Check(bool c, string what) { if (c) ok++; else { bad++; Console.WriteLine("FAIL: " + what); } }
+
+        // a press: a list of cursor positions (screen px) over time; the window may move under it (ignored by design)
+        static ClickVerdict Press(Point down, IEnumerable<Point> moves, double seconds, bool caughtFling, int slop)
+        {
+            double maxD = 0; bool drag = false;
+            foreach (var p in moves)
+            {
+                double d = Math.Sqrt((double)(p.X - down.X) * (p.X - down.X) + (double)(p.Y - down.Y) * (p.Y - down.Y));
+                maxD = Math.Max(maxD, d);
+                if (ClickRules.PastSlop(down, p, slop)) drag = true;
+            }
+            var v = ClickRules.Classify(seconds, maxD, caughtFling, slop);
+            if (drag) Check(v == ClickVerdict.Drag, "PastSlop and Classify agree on a drag");
+            return v;
+        }
+
+        static bool[] Vis(Bitmap b)
+        {
+            var v = new bool[b.Width * b.Height];
+            for (int y = 0; y < b.Height; y++) for (int x = 0; x < b.Width; x++) v[y * b.Width + x] = b.GetPixel(x, y).A > 8;
+            return v;
+        }
+
+        static int Main(string[] args)
+        {
+            var rnd = new Random(1234);
+            // ---------------- slop
+            Check(ClickRules.Slop(new Size(4, 4), 1f) == 7, "96 dpi: 7 px slop (Windows' 4 px drag size is smaller)");
+            Check(ClickRules.Slop(new Size(4, 4), 2f) == 14, "200%: 14 px slop");
+            Check(ClickRules.Slop(new Size(20, 20), 1f) == 20, "a larger Windows drag size wins");
+            Check(ClickRules.Slop(new Size(4, 4), 0.5f) == 7, "never below 7 px");
+            int S = 7;
+            Check(!ClickRules.PastSlop(new Point(0, 0), new Point(4, 5), S), "4,5 (6.4 px) is inside");
+            Check(ClickRules.PastSlop(new Point(0, 0), new Point(5, 5), S), "5,5 (7.07 px) is just past");
+            Check(ClickRules.PastSlop(new Point(0, 0), new Point(6, 5), S), "6,5 (7.8 px) is past 7");
+            Check(!ClickRules.PastSlop(new Point(100, 100), new Point(107, 100), S), "exactly 7 px is still a click");
+            Check(ClickRules.PastSlop(new Point(100, 100), new Point(108, 100), S), "8 px is a drag");
+            // the 1.2.3 rule (> 4 px on either axis) turned these ordinary clicks into drags
+            Check(Press(new Point(500, 500), new[] { new Point(505, 501) }, 0.15, false, S) == ClickVerdict.Click, "5 px slip: a click (1.2.3: a drag)");
+
+            // ---------------- jitter: hand / touchpad wobble up to 6.5 px from the press, many presses, all clicks
+            Func<Random, Point, Point> wob = (r, d0) => { while (true) { int dx = r.Next(-6, 7), dy = r.Next(-6, 7); if (dx * dx + dy * dy <= 42) return new Point(d0.X + dx, d0.Y + dy); } };
+            int jitterClicks = 0;
+            for (int n = 0; n < 2000; n++)
+            {
+                var d = new Point(rnd.Next(0, 3000), rnd.Next(0, 1500)); var mv = new List<Point>();
+                for (int k = 0; k < 12; k++) mv.Add(wob(rnd, d));
+                if (Press(d, mv, 0.05 + rnd.NextDouble() * 0.9, false, S) == ClickVerdict.Click) jitterClicks++;
+            }
+            Check(jitterClicks == 2000, "wobble <= 6.5 px: 2000/2000 clicks (" + jitterClicks + ")");
+            // the old rule on the same presses
+            int oldClicks = 0; rnd = new Random(1234);
+            for (int n = 0; n < 2000; n++)
+            {
+                var d = new Point(rnd.Next(0, 3000), rnd.Next(0, 1500)); bool drag = false;
+                for (int k = 0; k < 12; k++) { var p = wob(rnd, d); if (Math.Abs(p.X - d.X) > 4 || Math.Abs(p.Y - d.Y) > 4) drag = true; }
+                double secs = 0.05 + rnd.NextDouble() * 0.9; if (!drag && secs <= 1.0) oldClicks++;
+            }
+            Console.WriteLine("wobble <= 6.5 px: new rule " + jitterClicks + "/2000 clicks; 1.2.3 rule (> 4 px either axis, 1.0 s) " + oldClicks + "/2000");
+            // a jitter of +/-6 px (a heavier hand, a touchpad tap) is still a click; +/-12 px is a drag
+            Check(Press(new Point(0, 0), new[] { new Point(4, -4), new Point(-3, 5), new Point(5, 3) }, 0.2, false, S) == ClickVerdict.Click, "+/-5 px wobble: click");
+            Check(Press(new Point(0, 0), new[] { new Point(12, 0) }, 0.2, false, S) == ClickVerdict.Drag, "12 px: drag");
+
+            // ---------------- moving window: the beacon bobs +/-8 px, hops 10 px and wanders under a still cursor
+            // (cursor positions are screen coords, so the window's own motion never shows up)
+            var still = Enumerable.Repeat(new Point(800, 400), 30).ToList();
+            Check(Press(new Point(800, 400), still, 0.4, false, S) == ClickVerdict.Click, "window moving under a still cursor: click");
+            // a press while it settles after a drag (1.2.3: always a catch, never a click)
+            Check(Press(new Point(800, 400), new[] { new Point(801, 401) }, 0.3, false, S) == ClickVerdict.Click, "press while settling, no hand movement: click");
+            Check(Press(new Point(800, 400), new[] { new Point(801, 401) }, 0.3, true, S) == ClickVerdict.Catch, "press that stops a sliding (flung) beacon: a catch, no click");
+            Check(Press(new Point(800, 400), new[] { new Point(830, 401) }, 0.3, true, S) == ClickVerdict.Drag, "catch then move: a drag");
+
+            // ---------------- long presses
+            Check(Press(new Point(0, 0), new[] { new Point(0, 0) }, 1.2, false, S) == ClickVerdict.Click, "1.2 s still press: click (1.2.3: limit 1.0 s)");
+            Check(Press(new Point(0, 0), new[] { new Point(1, 1) }, 6.0, false, S) == ClickVerdict.Click, "6 s press, no movement: click (no limit when still)");
+            Check(Press(new Point(0, 0), new[] { new Point(4, 3) }, 1.4, false, S) == ClickVerdict.Click, "1.4 s, 5 px: click");
+            Check(Press(new Point(0, 0), new[] { new Point(4, 3) }, 1.6, false, S) == ClickVerdict.TooLong, "1.6 s and wandering 5 px: a hold, not a click");
+
+            // ---------------- what a click does (toggle, double-click)
+            double dct = 0.5;
+            Check(ClickRules.Act(false, 99, dct) == ClickAct.Open, "closed: open");
+            Check(ClickRules.Act(true, 99, dct) == ClickAct.Close, "open (long ago): close");
+            Check(ClickRules.Act(true, 0.25, dct) == ClickAct.KeepOpen, "second click of a double-click: stays open (1.2.3: open then close)");
+            Check(ClickRules.Act(true, 0.6, dct) == ClickAct.Close, "a separate click after the double-click time: close");
+            Check(ClickRules.Act(false, 0.1, dct) == ClickAct.Open, "bubble closed by something else just now: a click opens (1.2.3: swallowed for 0.4 s)");
+
+            // ---------------- the hit pad
+            {
+                int W = 60, H = 40; var vis = new bool[W * H];
+                for (int x = 10; x < 20; x++) for (int y = 10; y < 30; y++) vis[y * W + x] = true;
+                for (int x = 40; x < 50; x++) for (int y = 10; y < 30; y++) vis[y * W + x] = true;   // ears 20 px apart
+                var old = new HashSet<int>(HitPad.Grow(vis, W, H, 6));
+                var pad = new HashSet<int>(HitPad.Solid(vis, W, H, HitPad.Margin, 0, 0, 0));
+                Check(!old.Contains(20 * W + 30), "1.2.3 pad: a 20 px gap stayed click-through (the bug)");
+                Check(pad.Contains(20 * W + 30), "1.2.4 pad: the gap is solid");
+                Check(pad.Contains(20 * W + 2) && !pad.Contains(20 * W + 1), "8 px margin");
+                Check(!pad.Contains(0), "far corner stays click-through");
+            }
+            if (File.Exists("art/beacon-base.png"))
+            {
+                foreach (var name in new[] { "beacon-base.png", "beacon.png" })
+                    using (var art = new Bitmap("art/" + name))
+                    {
+                        int w = art.Width, h = art.Height; var vis = Vis(art); float px = w / 2f, py = h * 0.42f;
+                        var oldPad = new HashSet<int>(HitPad.Grow(vis, w, h, 6));
+                        var pad = new HashSet<int>(HitPad.Build(new[] { art }, HitPad.Margin, px, py, HitPad.TiltDeg));
+                        foreach (var deg in new[] { -12f, -7.5f, -3f, 3f, 7.5f, 12f })
+                        {
+                            var rot = HitPad.Sweep(vis, w, h, px, py, 0f);   // identity then a single angle:
+                            rot = Rotate(vis, w, h, px, py, deg);
+                            int n = 0, inNew = 0, inOld = 0;
+                            for (int i = 0; i < rot.Length; i++) if (rot[i]) { n++; if (pad.Contains(i)) inNew++; if (oldPad.Contains(i)) inOld++; }
+                            Check(inNew == n, name + " tilted " + deg + " deg: every drawn pixel takes the click (" + inNew + "/" + n + ")");
+                            if (Math.Abs(deg) >= 7.5f) Console.WriteLine(name + " tilted " + deg + " deg: 1.2.3 pad covered " + inOld + "/" + n + " drawn pixels (" + (n - inOld) + " click-through)");
+                        }
+                        // the body's bounding box (shrunk 4 px) is solid
+                        var bb = Bbox(vis, w, h); int holes = 0, oldHoles = 0;
+                        for (int y = bb.Top + 4; y < bb.Bottom - 4; y++) for (int x = bb.Left + 4; x < bb.Right - 4; x++)
+                        {
+                            // inside the silhouette rows only (round shapes): between the row's first and last visible pixel
+                            int a = -1, b2 = -1; for (int xx = 0; xx < w; xx++) if (vis[y * w + xx]) { if (a < 0) a = xx; b2 = xx; }
+                            if (a < 0 || x < a || x > b2) continue;
+                            if (!pad.Contains(y * w + x)) holes++; if (!oldPad.Contains(y * w + x)) oldHoles++;
+                        }
+                        Console.WriteLine(name + ": holes inside the silhouette: 1.2.3 pad " + oldHoles + " px, 1.2.4 pad " + holes + " px");
+                        Check(holes == 0, name + ": no holes inside the silhouette (" + holes + "; 1.2.3: " + oldHoles + ")");
+                        Check(pad.Count < w * h, name + ": the window's corners stay click-through (" + pad.Count + " of " + (w * h) + ")");
+                    }
+            }
+            else Console.WriteLine("(art/ not found: run from the repo root for the real-art pad checks)");
+
+            // ---------------- dialog hold: focus / presses on our own windows never collapse the shelf or a card
+            Check(ModalHold.PressClosesShelf(true, false, false, false, false, false), "a press elsewhere closes the shelf");
+            Check(!ModalHold.PressClosesShelf(true, false, false, true, false, false), "not while a dialog of ours is open (the Add tab bug)");
+            Check(!ModalHold.PressClosesShelf(true, false, false, false, true, false), "a press on one of our dialogs is not 'elsewhere'");
+            Check(!ModalHold.PressClosesShelf(true, true, false, false, false, false), "a press inside the shelf");
+            Check(!ModalHold.PressClosesShelf(true, false, true, false, false, false), "a press on an open menu");
+            Check(!ModalHold.PressClosesShelf(false, false, false, false, false, false), "no press, no close");
+            Check(ModalHold.DeactivateCloses(false, false, false, 5000), "card loses focus to another app: collapses");
+            Check(!ModalHold.DeactivateCloses(false, true, false, 5000), "card loses focus to our own dialog: stays");
+            Check(!ModalHold.DeactivateCloses(true, false, false, 5000), "card loses focus while a dialog of ours is open: stays");
+            Check(!ModalHold.DeactivateCloses(false, false, true, 5000), "cursor still over the card: stays");
+            Check(!ModalHold.DeactivateCloses(false, false, false, 300), "stray deactivate right after opening: stays");
+            {
+                int c0 = ModalHold.Count; var a = ModalHold.Hold("edit"); var b = ModalHold.Hold("picker");
+                Check(ModalHold.Held && ModalHold.Count == c0 + 2, "holds nest (Edit tab + its image picker)");
+                b.Dispose(); Check(ModalHold.Held, "closing the picker: the Edit tab still holds");
+                b.Dispose(); Check(ModalHold.Count == c0 + 1, "a token releases once");
+                a.Dispose(); Check(!ModalHold.Held, "both closed: released");
+            }
+
+            // ---------------- shelf header: [speaker] Sound: Custom | Classic | Off grouped; Skin, Open on their own groups
+            foreach (var edge in new[] { TabEdge.Right, TabEdge.Left, TabEdge.Top, TabEdge.Bottom })
+                for (int rows = 1; rows <= 6; rows++)
+                {
+                    var m = new TabRender.ShelfModel { Edge = edge, TotalTabs = rows };
+                    for (int i = 0; i < rows; i++) m.Rows.Add(new TabRender.ShelfRow { Id = "t" + i, Name = "Tab " + i });
+                    var l = TabRender.Layout(m); string tag = " (" + edge + ", " + rows + " rows)";
+                    Func<string, Rectangle> R = a => { foreach (var h in l.Hits) if (h.Action == a) return h.R; return Rectangle.Empty; };
+                    var sp = R("speaker"); var segs = Rectangle.Union(Rectangle.Union(R("snd:custom"), R("snd:classic")), R("snd:off"));
+                    Check(!sp.IsEmpty && !segs.IsEmpty, "speaker and sound segments present" + tag);
+                    Check(sp.Y == segs.Y && segs.Left - sp.Right >= 40 && segs.Left - sp.Right <= 56, "speaker right beside the segments, room for 'Sound:' (" + (segs.Left - sp.Right) + " px)" + tag);
+                    var grp = l.Groups.FirstOrDefault(g => g.Contains(sp) && g.Contains(segs));
+                    Check(!grp.IsEmpty, "speaker + segments in one outlined group" + tag);
+                    Check(l.Groups.Any(g => g.Contains(R("skin")) && !g.Contains(sp)), "Skin has its own group" + tag);
+                    Check(l.Groups.Any(g => g.Contains(R("hover")) && !g.Contains(sp)), "Open on has its own group" + tag);
+                    for (int i = 0; i < l.Groups.Count; i++) for (int j = i + 1; j < l.Groups.Count; j++) Check(!l.Groups[i].IntersectsWith(l.Groups[j]), "groups don't overlap" + tag);
+                    var ctl = l.Hits.Where(h => h.Action != "header" && h.Action != "row" && h.Action != "edit").ToList();
+                    foreach (var h in ctl) Check(l.Panel.Contains(h.R), h.Action + " inside the panel" + tag);
+                    for (int i = 0; i < ctl.Count; i++) for (int j = i + 1; j < ctl.Count; j++) Check(!ctl[i].R.IntersectsWith(ctl[j].R), ctl[i].Action + " / " + ctl[j].Action + " don't overlap" + tag);
+                    // 1.2.5: no dead controls: every hit is one the shelf handles, and the old "+ Add a tab" pane is gone
+                    var known = new HashSet<string> { "header", "row", "edit", "more", "speaker", "snd:custom", "snd:classic", "snd:off", "size:small", "size:normal", "size:large", "skin", "hover" };
+                    foreach (var h in l.Hits) Check(known.Contains(h.Action), "'" + h.Action + "' is a live shelf control" + tag);
+                    Check(!l.Hits.Any(h => h.Action == "add"), "no + Add a tab pane" + tag);
+                    bool vert = edge == TabEdge.Left || edge == TabEdge.Right;
+                    if (!vert) Check(R("size:small").Left >= l.Panel.X + 14 + 110 + 140, "Size clear of the title and tab count" + tag);
+                }
+            Check(TabRender.TipFor("snd:custom", null) == "Custom: Bot Beacons alert sounds", "Custom tip");
+            Check(TabRender.TipFor("snd:classic", null) == "Classic: Windows system sounds", "Classic tip");
+            Check(TabRender.TipFor("snd:off", null) == "Off: silent", "Off tip");
+            Check(TabRender.TipFor("add", null).Length == 0, "1.2.5: no '+ Add a tab' pane (bots create their own tabs)");
+            Check(TabRender.TipFor("speaker", new TabRender.ShelfModel { Sounds = "off", LastSet = "classic" }).Contains("Classic"), "speaker tip (off) names what it turns back on");
+            Check(TabRender.TipFor("speaker", new TabRender.ShelfModel { Sounds = "custom", Volume = "loud" }).Contains("loud"), "speaker tip shows the volume");
+            foreach (var a in new[] { "skin", "hover", "more", "size:small" }) Check(TabRender.TipFor(a, null).Length > 0, a + " has a tip");
+
+            if (args.Length > 0 && args[0] == "alerts") { Alerts(); FloatBadge(); NewBotTests(); }
+            Console.WriteLine(bad == 0 ? "ALL OK (" + ok + " checks)" : bad + " FAILED, " + ok + " ok");
+            return bad == 0 ? 0 : 1;
+        }
+
+        static bool[] Rotate(bool[] vis, int w, int h, float px, float py, float deg)
+        {
+            // forward-draw like the renderer (rotate about the pivot), nearest pixel
+            var o = new bool[w * h]; double a = deg * Math.PI / 180, c = Math.Cos(a), s = Math.Sin(a);
+            for (int y = 0; y < h; y++) for (int x = 0; x < w; x++)
+                {
+                    double dx = x + 0.5 - px, dy = y + 0.5 - py;
+                    int sx = (int)Math.Floor(px + dx * c + dy * s), sy = (int)Math.Floor(py - dx * s + dy * c);
+                    if (sx >= 0 && sy >= 0 && sx < w && sy < h && vis[sy * w + sx]) o[y * w + x] = true;
+                }
+            return o;
+        }
+        static Rectangle Bbox(bool[] v, int w, int h)
+        {
+            int l = w, t = h, r = -1, b = -1;
+            for (int y = 0; y < h; y++) for (int x = 0; x < w; x++) if (v[y * w + x]) { l = Math.Min(l, x); t = Math.Min(t, y); r = Math.Max(r, x); b = Math.Max(b, y); }
+            return Rectangle.FromLTRB(l, t, r + 1, b + 1);
+        }
+
+        // ---------------- 1.2.5: a floating beacon's "!" badge, its halo and the red aura are drawn inside the window (never clipped),
+        // at every tilt, pulse, aura and sub-pixel offset, for every beacon in beacons.json; and a beacon pushed into a corner keeps
+        // its badge and aura inside the monitor's work area.
+        static void FloatBadge()
+        {
+            var bf = System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance;
+            foreach (var b in Program.Beacons)
+            {
+                var ws = b.WindowSize; string tag = " (" + b.Def.Id + ")";
+                Func<RectangleF, bool> inWin = r => r.Left >= 1 && r.Top >= 1 && r.Right <= ws.Width - 1 && r.Bottom <= ws.Height - 1;
+                Check(inWin(b.BadgeBox), "badge + halo box inside the window" + tag + " " + b.BadgeBox + " in " + ws);
+                Check(inWin(b.AuraBox), "red aura box inside the window" + tag);
+                Check(inWin(b.VisibleBox), "visible box (art + badge + aura) inside the window" + tag);
+                using (var bmp = new Bitmap(ws.Width, ws.Height, System.Drawing.Imaging.PixelFormat.Format32bppPArgb))
+                using (var g = Graphics.FromImage(bmp))
+                {
+                    g.SmoothingMode = System.Drawing.Drawing2D.SmoothingMode.AntiAlias; g.InterpolationMode = System.Drawing.Drawing2D.InterpolationMode.Bilinear; g.PixelOffsetMode = System.Drawing.Drawing2D.PixelOffsetMode.Half;
+                    foreach (var sway in new[] { -HitPad.TiltDeg, -6f, 0f, 6f, HitPad.TiltDeg })
+                        foreach (var pulse in new[] { 0.05f, 0.5f, 1f })
+                            foreach (var aura in new[] { 0f, 1f })
+                                foreach (var fr in new[] { 0f, 0.75f })
+                                {
+                                    b.PaintFrame(g, sway, pulse, aura, 0, fr, fr, true); g.Flush(System.Drawing.Drawing2D.FlushIntention.Sync);
+                                    int touch = 0, red = 0; var bb = Rectangle.Round(b.BadgeBox);
+                                    for (int y = 0; y < ws.Height; y++) for (int x = 0; x < ws.Width; x++)
+                                    {
+                                        var c = bmp.GetPixel(x, y);
+                                        if ((x == 0 || y == 0 || x == ws.Width - 1 || y == ws.Height - 1) && c.A > 0) touch++;
+                                        if (bb.Contains(x, y) && c.A > 200 && c.R > 200 && c.G < 90 && c.B < 90) red++;
+                                    }
+                                    string tg = tag + " sway " + sway + " pulse " + pulse + " aura " + aura + " frac " + fr;
+                                    Check(touch == 0, touch + " drawn px on the window border (clipped)" + tg);
+                                    Check(red > 60, "the red badge is drawn in its box (" + red + " px)" + tg);
+                                }
+                }
+                // pushed into each corner of the work area: the badge and aura stay on the monitor
+                var wa = System.Windows.Forms.Screen.PrimaryScreen.WorkingArea;
+                foreach (var corner in new[] { new Point(wa.Right + 500, wa.Top - 500), new Point(wa.Left - 500, wa.Top - 500), new Point(wa.Right + 500, wa.Bottom + 500), new Point(wa.Left - 500, wa.Bottom + 500) })
+                {
+                    b.PlaceAt(corner);
+                    int wx = (int)typeof(BeaconForm).GetField("winX", bf).GetValue(b), wy = (int)typeof(BeaconForm).GetField("winY", bf).GetValue(b);
+                    var vb = b.VisibleBox; vb.Offset(wx, wy);
+                    Check(wa.Contains(vb), "badge + aura inside the work area at corner " + corner + tag + " " + vb + " in " + wa);
+                }
+            }
+        }
+
+        // ---------------- every alert path sets the visual state (and reaches the screen), whatever the sound did
+        static void Alerts()
+        {
+            Settings.Load();
+            var shown = new Dictionary<string, bool>();
+            Visibility.ApplyHook = (b, show) => shown[b.Def.Id] = show;
+            var defs = BeaconConfig.Load();
+            for (int i = 0; i < defs.Count; i++) Program.Beacons.Add(new BeaconForm(defs[i], i, defs.Count));
+            var echo = Program.Find("echo"); var robot = Program.Find("robot"); var cat = Program.Find("cat");
+            Check(echo != null && echo.Def.Test, "echo is the test beacon (hidden unless Show test beacons is on)");
+            Check(echo.Def.Name == "Echo Beacon", "routing is by id ('echo'), the name is only shown");
+            Func<string, bool> onScreen = id => { bool v; return Visibility.ShouldShow(Program.Find(id)) && (!shown.TryGetValue(id, out v) || v || Skin.IsTab(Program.Find(id))); };
+            var route = typeof(Program).GetMethod("Route", System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Static);
+            Action<PetMessage> send = m => route.Invoke(null, new object[] { m });
+            Action reset = () => { foreach (var b in Program.Beacons) { b.ResolveAttention("harness"); b.Unread.Clear(); } shown.Clear(); };
+
+            foreach (var skin in new[] { "floating", "tabs", "mixed" })
+                foreach (var sound in new[] { "on", "off", "muted", "throttled" })
+                {
+                    Settings.Set("skin", skin); Settings.Set("showTest", "0"); Settings.Set("paused", "0");
+                    Sound.SetOn(sound != "off"); Sound.SetMuted("echo", sound == "muted"); Sound.SetMuted("robot", sound == "muted");
+                    string tag = " (" + skin + ", sound " + sound + ")";
+                    reset();
+                    if (sound == "throttled") { send(new PetMessage { Id = "a0", Bot = "echo", Kind = "attention", Text = "first" }); reset(); }
+                    // the reported case: attention echo "...", then normal messages to robot and cat ~8 s apart
+                    send(new PetMessage { Id = "a1", Bot = "echo", Kind = "attention", Text = "Needs your OK" });
+                    Check(echo.Attention && echo.Alerting, "attention echo: badge + pulse state set" + tag);
+                    Check(onScreen("echo"), "attention echo: the hidden test beacon comes on screen" + tag);
+                    send(new PetMessage { Id = "m1", Bot = "robot", Text = "hello" });
+                    send(new PetMessage { Id = "m2", Bot = "cat", Text = "hello" });
+                    Check(robot.Alerting && robot.Unread.Count == 1 && cat.Alerting && cat.Unread.Count == 1, "normal messages glow" + tag);
+                    // a second attention call to the same beacon while the first is pending (sound throttled): still on
+                    send(new PetMessage { Id = "a2", Bot = "echo", Kind = "attention", Text = "again" });
+                    Check(echo.Attention && echo.AttentionMsg.Id == "a2" && onScreen("echo"), "a second call (sound throttled) keeps the visuals" + tag);
+                    // resolved: back to hidden
+                    echo.DismissFromBubble();
+                    Check(!echo.Attention && !Visibility.ShouldShow(echo), "dismissed: the test beacon goes back to hidden" + tag);
+                    // a beacon the user hid
+                    Visibility.SetHidden(robot, true); shown.Clear();
+                    send(new PetMessage { Id = "a3", Bot = "robot", Kind = "attention", Text = "x" });
+                    Check(robot.Attention && robot.Alerting && onScreen("robot"), "attention to a hidden beacon: shown" + tag);
+                    robot.DismissFromBubble(); Check(!Visibility.ShouldShow(robot), "dismissed: hidden again" + tag);
+                    Visibility.SetHidden(robot, false);
+                    // silent / local test / restore paths
+                    reset();
+                    send(new PetMessage { Id = "a4", Bot = "echo", Kind = "attention", Text = "quiet", Silent = true });
+                    Check(echo.Attention && onScreen("echo"), "silent attention call: visuals still on" + tag);
+                    reset();
+                    echo.RestoreAttention(new PetMessage { Id = "a5", Bot = "echo", Kind = "attention", Text = "saved", Time = DateTime.Now });
+                    Visibility.Apply();
+                    Check(echo.Attention && echo.Alerting && onScreen("echo"), "attention restored at start-up: shown" + tag);
+                    reset();
+                    send(new PetMessage { Id = "a6", Bot = "nobody", Kind = "attention", Text = "unknown id" });
+                    var fb = Program.Beacons.First(b => b.Def.Fallback);
+                    Check(fb.Attention && onScreen(fb.Def.Id), "unknown id: the fallback beacon shows it" + tag);
+                    // paused: the desktop stays clear (deliberate); the state is still set for the tray badge
+                    reset(); Settings.Set("paused", "1");
+                    send(new PetMessage { Id = "a7", Bot = "robot", Kind = "attention", Text = "p" });
+                    Check(robot.Attention && robot.Alerting && !Visibility.ShouldShow(robot), "paused: state set, nothing pops up" + tag);
+                    Settings.Set("paused", "0");
+                    // Show test beacons on: the normal path
+                    reset(); Settings.Set("showTest", "1");
+                    send(new PetMessage { Id = "a8", Bot = "echo", Kind = "attention", Text = "t" });
+                    Check(echo.Attention && onScreen("echo"), "test beacons shown: attention visible" + tag);
+                    echo.DismissFromBubble(); Check(Visibility.ShouldShow(echo), "test beacons shown: stays shown after dismiss" + tag);
+                    Settings.Set("showTest", "0");
+                }
+            reset();
+        }
+
+        // ---------------- 1.2.5: bots create their own tabs. A signed relay message (Verified) for an id with no beacon asks
+        // "New bot X wants a tab. Add / Not now"; nothing else ever asks (unsigned / local / user / bad id), duplicates queue,
+        // Add puts the kept message(s) on the new tab, Not now falls back as before and doesn't re-ask this run.
+        static void NewBotTests()
+        {
+            var route = typeof(Program).GetMethod("Route", System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Static);
+            Action<PetMessage> send = m => route.Invoke(null, new object[] { m });
+            var asked = new List<string>(); var askedName = new Dictionary<string, string>();
+            NewBots.PromptHook = (id, name) => { asked.Add(id); askedName[id] = name; };
+            NewBots.ResetForTests();
+            var fb = Program.Beacons.First(b => b.Def.Fallback); var robot = Program.Find("robot");
+            Action clear = () => { foreach (var b in Program.Beacons) { b.ResolveAttention("harness"); b.Unread.Clear(); } asked.Clear(); };
+            int n0 = Program.Beacons.Count;
+
+            // the pure rule
+            Func<bool, bool, string, PetMessage> M = (ver, user, id) => new PetMessage { Id = "x", Bot = id, Text = "t", Verified = ver, FromUser = user };
+            Check(!new PetMessage().Verified, "a PetMessage is unverified unless the relay marks it");
+            Check(NewBots.Decide(M(true, false, "news"), true, false, false, 0) == NewBotAct.Route, "rule: known id routes");
+            Check(NewBots.Decide(M(true, false, "news"), false, false, false, 0) == NewBotAct.Prompt, "rule: signed + new id asks");
+            Check(NewBots.Decide(M(false, false, "news"), false, false, false, 0) == NewBotAct.Fallback, "rule: unsigned never asks");
+            Check(NewBots.Decide(M(true, true, "news"), false, false, false, 0) == NewBotAct.Fallback, "rule: a user message never asks");
+            foreach (var bad in new[] { "", "a b", "../x", "x/y", "caf\u00e9", new string('a', 41), "a.b" })
+                Check(NewBots.Decide(M(true, false, bad), false, false, false, 0) == NewBotAct.Fallback, "rule: bad id '" + bad + "' never asks");
+            Check(NewBots.Decide(M(true, false, "news"), false, true, false, 0) == NewBotAct.Fallback, "rule: Not now this run: no re-ask");
+            Check(NewBots.Decide(M(true, false, "news"), false, false, true, 1) == NewBotAct.Queue, "rule: already asking: queue");
+            Check(NewBots.Decide(M(true, false, "news"), false, false, false, NewBots.MaxOpenPrompts) == NewBotAct.Fallback, "rule: at most " + NewBots.MaxOpenPrompts + " prompts at once");
+            Check(NewBots.Decide(null, false, false, false, 0) == NewBotAct.Fallback, "rule: null is safe");
+            Check(NewBots.NameFor("news-bot", "") == "News Bot" && NewBots.NameFor("ci_watch", null) == "Ci Watch", "name from the id");
+            Check(NewBots.NameFor("x", "  Daily\u0007 News ") == "Daily News", "sent name trimmed, control chars dropped");
+            Check(NewBots.NameFor("x", new string('n', 50)).Length == 32, "sent name capped at 32");
+
+            // unsigned / local dev hook / user / bad id: never prompt, the fallback shows it as before
+            clear();
+            send(new PetMessage { Id = "u1", Bot = "news-bot", Text = "unsigned" });
+            send(new PetMessage { Id = "u2", Bot = "news-bot", Kind = "attention", Text = "local attention" });
+            send(new PetMessage { Id = "u3", Bot = "news-bot", Text = "from user", Verified = true, FromUser = true });
+            send(new PetMessage { Id = "u4", Bot = "bad id!", Text = "bad", Verified = true });
+            Check(asked.Count == 0, "unsigned, local, user and bad-id messages never prompt");
+            Check(Program.Find("news-bot") == null && Program.Beacons.Count == n0, "...and make no tab");
+            Check(fb.Unread.Count + (fb.Attention ? 1 : 0) >= 3 && fb.Unread.Any(m => m.Title.Contains("[news-bot]")), "...the fallback beacon shows them, tagged with the id");
+
+            // a known id: no prompt
+            clear(); send(new PetMessage { Id = "k1", Bot = "robot", Text = "hi", Verified = true });
+            Check(asked.Count == 0 && robot.Unread.Count == 1, "known id: delivered, no prompt");
+
+            // signed new id: one prompt, the message waits; a second one queues; Add puts both on the new tab
+            clear();
+            send(new PetMessage { Id = "s1", Bot = "news-bot", Text = "first", Verified = true, BotName = "Daily News" });
+            Check(asked.Count == 1 && asked[0] == "news-bot" && askedName["news-bot"] == "Daily News", "signed new id: 'New bot Daily News wants a tab'");
+            Check(fb.Unread.Count == 0 && !fb.Attention && Program.Find("news-bot") == null, "while asking: not on the fallback, no tab yet");
+            send(new PetMessage { Id = "s2", Bot = "news-bot", Kind = "attention", Text = "second", Verified = true });
+            Check(asked.Count == 1 && NewBots.IsPending("news-bot"), "a second message while asking: kept, no second prompt");
+            var nb = NewBots.Resolve("news-bot", true);
+            Check(nb != null && Program.Find("news-bot") == nb && Program.Beacons.Count == n0 + 1, "Add: the tab exists");
+            Check(nb.Def.Name == "Daily News" && TabStore.IsAdded("news-bot"), "Add: named after the bot, saved as an added tab");
+            Check(nb.Unread.Any(m => m.Id == "s1") && nb.Attention && nb.AttentionMsg.Id == "s2", "Add: the kept messages show on the new tab");
+            Check(fb.Unread.Count == 0 && !fb.Attention, "Add: nothing went to the fallback");
+            Check(!nb.Unread.Concat(new[] { nb.AttentionMsg }).Any(m => m.Title.Contains("[news-bot]")), "Add: no [id] tag on its own tab");
+            clear(); send(new PetMessage { Id = "s3", Bot = "news-bot", Text = "third", Verified = true });
+            Check(asked.Count == 0 && nb.Unread.Count == 1, "after Add: goes straight to its tab");
+            Check(NewBots.Resolve("news-bot", true) == null, "answering twice is harmless");
+
+            // the bot's picture if it sent one first
+            clear();
+            Directory.CreateDirectory(Path.GetDirectoryName(Avatars.PathFor("pic-bot")));
+            using (var bm = new Bitmap(8, 8)) bm.Save(Avatars.PathFor("pic-bot"), System.Drawing.Imaging.ImageFormat.Png);
+            send(new PetMessage { Id = "p1", Bot = "pic-bot", Text = "hello", Verified = true });
+            var pb = NewBots.Resolve("pic-bot", true);
+            Check(pb != null && TabStore.Get("pic-bot").Image == "profile" && TabStore.ImageSource(pb.Def) == "bot", "Add: uses the picture the bot sent");
+            Check(pb.Def.Name == "Pic Bot", "no name sent: named from the id");
+
+            // Not now: the old behaviour (fallback, tagged), and no re-ask this run
+            clear();
+            send(new PetMessage { Id = "l1", Bot = "later-bot", Text = "one", Verified = true });
+            send(new PetMessage { Id = "l2", Bot = "later-bot", Text = "two", Verified = true });
+            Check(asked.Count == 1, "later-bot: one prompt");
+            Check(NewBots.Resolve("later-bot", false) == null && Program.Find("later-bot") == null, "Not now: no tab");
+            Check(fb.Unread.Count(m => m.Title.Contains("[later-bot]")) == 2, "Not now: both messages on the fallback beacon, tagged");
+            send(new PetMessage { Id = "l3", Bot = "later-bot", Text = "three", Verified = true });
+            Check(asked.Count == 1 && fb.Unread.Count(m => m.Title.Contains("[later-bot]")) == 3, "Not now: later messages fall back without asking again");
+
+            // a removed tab's bot doesn't re-ask straight away
+            NewBots.Decline("gone-bot"); clear();
+            send(new PetMessage { Id = "g1", Bot = "gone-bot", Text = "x", Verified = true });
+            Check(asked.Count == 0, "removed this run: no prompt");
+
+            // at most three prompts at once; the rest fall back
+            clear();
+            foreach (var id in new[] { "b1", "b2", "b3", "b4" }) send(new PetMessage { Id = "q" + id, Bot = id, Text = "x", Verified = true });
+            Check(asked.Count == 3 && !NewBots.IsPending("b4") && fb.Unread.Any(m => m.Title.Contains("[b4]")), "a flood of new ids: 3 prompts, the rest fall back");
+            // queue cap
+            for (int i = 0; i < 30; i++) send(new PetMessage { Id = "c" + i, Bot = "b1", Text = "x", Verified = true });
+            var b1 = NewBots.Resolve("b1", true);
+            Check(b1 != null && b1.Unread.Count == NewBots.MaxQueued, "kept messages capped at " + NewBots.MaxQueued);
+            NewBots.Resolve("b2", false); NewBots.Resolve("b3", false);
+            NewBots.PromptHook = null; NewBots.ResetForTests();
+        }
+    }
+}

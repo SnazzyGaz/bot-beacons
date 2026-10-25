@@ -6,7 +6,7 @@ namespace BotBeacons
 {
     // "Start with Windows": a per-user Run entry (HKCU, no admin) that launches the dist exe with --startup.
     // settings.ini startWithWindows=1|0 is the user's choice; the Run value is kept in step with it (and re-pointed
-    // if the exe has moved) every time the pet starts.
+    // if the exe has moved) every time the app starts.
     static class AutoStart
     {
         const string RunKey = @"Software\Microsoft\Windows\CurrentVersion\Run", ValueName = "BotBeacons";

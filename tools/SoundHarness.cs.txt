@@ -1,0 +1,101 @@
+// 1.1.5 sound logic check (Mono, off-PC): throttles, quiet hours, mute list, WAV scaling.
+// Build: copy src/*.cs + tools/MonoCngStub.cs.txt (as CngStub.cs) + this file (as H.cs) to a temp dir, then
+//   mcs -langversion:5 -main:SoundHarness -r:System.Drawing.dll -r:System.Windows.Forms.dll -r:System.Web.Extensions.dll -r:System.Security.dll -r:System.Core.dll *.cs -out:h.exe && HOME=$(mktemp -d) mono h.exe sounds
+using System; using System.Collections.Generic; using System.IO;
+using BotBeacons;
+static class SoundHarness
+{
+    static int pass, fail;
+    static void Ok(bool c, string what) { if (c) pass++; else { fail++; Console.WriteLine("FAIL " + what); } }
+    static DateTime At(int h, int m) { return new DateTime(2026, 10, 24, h, m, 0, DateTimeKind.Local); }
+    static readonly DateTime Noon = new DateTime(2026, 10, 24, 12, 0, 0);
+    static int Main(string[] a)
+    {
+        // quiet hours 23:00-07:00
+        foreach (var t in new[] { new { h = 22, m = 59, q = false }, new { h = 23, m = 0, q = true }, new { h = 0, m = 0, q = true }, new { h = 3, m = 30, q = true }, new { h = 6, m = 59, q = true }, new { h = 7, m = 0, q = false }, new { h = 12, m = 0, q = false } })
+            Ok(SoundGate.InQuietHours(At(t.h, t.m), 23, 7) == t.q, "quiet " + t.h + ":" + t.m);
+        Ok(!SoundGate.InQuietHours(At(3, 0), 5, 5), "from==to never quiet");
+        Ok(SoundGate.InQuietHours(At(10, 0), 9, 17) && !SoundGate.InQuietHours(At(17, 0), 9, 17), "daytime window");
+
+        var g = new SoundGate();
+        Ok(g.Check("a", false, 0, Noon, false, false, false) == "sound off", "off");
+        Ok(g.Check("a", false, 0, Noon, true, false, true) == "beacon muted", "muted");
+        Ok(g.Check("a", false, 0, At(23, 30), true, true, false) == "quiet hours", "quiet on at 23:30");
+        Ok(g.Check("a", false, 0, At(23, 30), true, false, false) == null, "quiet off at 23:30 plays");
+        // skipped checks never consume the throttle
+        g = new SoundGate();
+        g.Check("a", false, 0, Noon, false, false, false); g.Check("a", false, 0, Noon, true, false, true);
+        Ok(g.Check("a", false, 0.1, Noon, true, false, false) == null, "skips do not record");
+
+        // message: 1 per beacon per 4 s
+        g = new SoundGate();
+        Ok(g.Check("a", false, 10, Noon, true, false, false) == null, "msg 1");
+        Ok(g.Check("a", false, 13.9, Noon, true, false, false) != null, "msg 3.9s blocked");
+        Ok(g.Check("a", false, 14.0, Noon, true, false, false) == null, "msg 4.0s plays");
+        // attention: 1 per beacon per 10 s, separate from messages; a message right after an attention stays quiet
+        g = new SoundGate();
+        Ok(g.Check("a", false, 0, Noon, true, false, false) == null, "msg then");
+        Ok(g.Check("a", true, 2, Noon, true, false, false) == null, "attention 2s after msg plays");
+        Ok(g.Check("a", false, 5, Noon, true, false, false) != null, "msg 3s after attention blocked");
+        Ok(g.Check("a", true, 11.9, Noon, true, false, false) != null, "attention 9.9s blocked");
+        Ok(g.Check("a", true, 12.0, Noon, true, false, false) == null, "attention 10s plays");
+        // global: one sound per 1.5 s across beacons
+        g = new SoundGate();
+        Ok(g.Check("a", false, 0, Noon, true, false, false) == null, "g a");
+        Ok(g.Check("b", false, 1.0, Noon, true, false, false) == "throttled (global)", "g b 1.0 blocked");
+        Ok(g.Check("b", true, 1.4, Noon, true, false, false) == "throttled (global)", "g attention 1.4 blocked");
+        Ok(g.Check("b", false, 1.5, Noon, true, false, false) == null, "g b 1.5 plays");
+        g = new SoundGate(); int burst = 0;
+        foreach (var id in new[] { "orb", "robot", "cat", "helper", "status", "reminder", "briefing", "echo" }) if (g.Check(id, false, 100.1, Noon, true, false, false) == null) burst++;
+        Ok(burst == 1, "burst of 8 beacons in one moment -> 1 sound (got " + burst + ")");
+        Ok(g.Check("ORB", false, 102, Noon, true, false, false) != null, "ids case-insensitive");
+
+        // randomised: invariants over 200k events
+        var rnd = new Random(7); g = new SoundGate(); double now = 0; var played = new List<Tuple<double, string, bool>>();
+        string[] ids = { "a", "b", "c", "d" };
+        for (int i = 0; i < 200000; i++)
+        {
+            now += rnd.NextDouble() * 1.2; string id = ids[rnd.Next(4)]; bool att = rnd.Next(5) == 0;
+            if (g.Check(id, att, now, Noon, true, false, false) == null) played.Add(Tuple.Create(now, id, att));
+        }
+        bool okG = true, okM = true, okA = true;
+        var lastAny = new Dictionary<string, double>(); var lastAtt = new Dictionary<string, double>(); double prev = double.NegativeInfinity;
+        foreach (var p in played)
+        {
+            if (p.Item1 - prev < 1.5) okG = false; prev = p.Item1; double t;
+            if (!p.Item3 && lastAny.TryGetValue(p.Item2, out t) && p.Item1 - t < 4) okM = false;
+            if (p.Item3 && lastAtt.TryGetValue(p.Item2, out t) && p.Item1 - t < 10) okA = false;
+            lastAny[p.Item2] = p.Item1; if (p.Item3) lastAtt[p.Item2] = p.Item1;
+        }
+        Ok(okG, "random: global gap"); Ok(okM, "random: message gap"); Ok(okA, "random: attention gap");
+        Ok(played.Count > 1000, "random: still plays (" + played.Count + ")");
+
+        // mute list in settings (temp HOME): round trip, per beacon, case-insensitive, defaults
+        Ok(Sound.On && Sound.Volume == "normal" && !Sound.QuietHours, "defaults: on, normal, quiet hours off");
+        Sound.SetMuted("robot", true); Sound.SetMuted("echo", true);
+        Ok(Sound.IsMuted("Robot") && Sound.IsMuted("echo") && !Sound.IsMuted("cat"), "mute two");
+        Sound.SetMuted("robot", false);
+        Ok(!Sound.IsMuted("robot") && Sound.IsMuted("echo"), "unmute one");
+        Sound.SetMuted("echo", true); Ok(Settings.Get("soundMuted", "") == "echo", "no duplicates");
+        Sound.SetVolume("loud"); Ok(Sound.Volume == "loud", "volume loud"); Settings.Set("soundVolume", "bogus"); Ok(Sound.Volume == "normal", "bad volume -> normal");
+        Sound.SetQuietHours(true); Ok(Sound.QuietHours, "quiet hours on"); Sound.SetOn(false); Ok(!Sound.On, "sound off");
+
+        // WAV pre-scaling on every shipped file
+        foreach (var f in Directory.GetFiles(a[0], "*.wav"))
+        {
+            byte[] orig = File.ReadAllBytes(f);
+            foreach (var gain in new[] { 0.35f, 0.65f, 1.0f })
+            {
+                var b = (byte[])orig.Clone(); Ok(Sound.ScaleInPlace(b, gain), "scale " + Path.GetFileName(f));
+                int data = 44; double err = 0; for (int i = data; i + 1 < b.Length; i += 2) { short o = (short)(orig[i] | orig[i + 1] << 8), s = (short)(b[i] | b[i + 1] << 8); err = Math.Max(err, Math.Abs(s - o * gain)); }
+                Ok(err <= 0.5001, "scaled samples exact " + Path.GetFileName(f) + " x" + gain);
+                Ok(b.Length == orig.Length, "length unchanged");
+            }
+        }
+        var bad = (byte[])File.ReadAllBytes(Directory.GetFiles(a[0], "*.wav")[0]).Clone(); bad[34] = 8;   // 8-bit -> not scaled, played as-is
+        Ok(!Sound.ScaleInPlace(bad, 0.5f), "non-16-bit rejected");
+        Ok(!Sound.ScaleInPlace(new byte[10], 0.5f), "junk rejected");
+        Console.WriteLine("Sound checks: " + pass + " passed, " + fail + " failed.");
+        return fail == 0 ? 0 : 1;
+    }
+}

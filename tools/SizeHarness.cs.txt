@@ -1,0 +1,92 @@
+// Mono check of the 1.1.6 reply size limit (offline: no relay, no settings, no window).
+// Build and run on Linux (needs mono-mcs/mono-devel):
+//   d=$(mktemp -d); cp src/*.cs $d/; cp tools/MonoCngStub.cs.txt $d/CngStub.cs; cp tools/SizeHarness.cs.txt $d/SizeHarness.cs
+//   mcs -langversion:5 -main:BotBeacons.SizeHarness -out:$d/h.exe -r:System.Windows.Forms.dll -r:System.Drawing.dll \
+//       -r:System.Web.Extensions.dll -r:System.Security.dll -r:System.Core.dll $d/*.cs
+//   mono $d/h.exe /tmp/cs_envs.json            # checks + writes C#-sealed replies for Python
+//   python3 tools/test_message_size.py --csharp /tmp/cs_envs.json   # Python opens them and writes /tmp/cs_envs.json.py
+//   mono $d/h.exe /tmp/cs_envs.json open       # C# opens the Python-sealed envelopes
+using System;
+using System.Collections.Generic;
+using System.IO;
+using System.Text;
+using System.Web.Script.Serialization;
+
+namespace BotBeacons
+{
+    static class SizeHarness
+    {
+        static int fails;
+        static void Check(bool ok, string what) { if (!ok) { fails++; Console.WriteLine("FAIL: " + what); } }
+        static string Rep(string unit, int n) { var sb = new StringBuilder(); while (sb.Length < n) sb.Append(unit); return sb.ToString().Substring(0, n); }
+        static readonly string[][] Units = {
+            new[] { "ascii", "a" }, new[] { "emoji", "\U0001F600" }, new[] { "accented", "\u00e9" }, new[] { "quote+newline", "\"\n" },
+            new[] { "cjk", "\u6f22" }, new[] { "html chars <>&'", "<>&'" },
+            new[] { "mixed", "Caf\u00e9 \u2615 \"ok\"\n\u65e5\u672c \U0001F680 <b>&amp;</b> \\ \t" } };
+
+        static int Main(string[] args)
+        {
+            var json = new JavaScriptSerializer { MaxJsonLength = int.MaxValue };
+            string file = args.Length > 0 ? args[0] : "/tmp/cs_envs.json";
+            if (args.Length > 1 && args[1] == "open")
+            {
+                var keyd = json.DeserializeObject(File.ReadAllText(file)) as Dictionary<string, object>;
+                byte[] k = Convert.FromBase64String((string)keyd["key"]);
+                var d = json.DeserializeObject(File.ReadAllText(file + ".py", Encoding.UTF8)) as Dictionary<string, object>;
+                int ok = 0, n = 0;
+                foreach (Dictionary<string, object> e in (object[])d["envs"])
+                {
+                    n++; string why; var p = Crypto.Open(k, Crypto.BotToPet, (string)e["env"], out why);
+                    bool good = p != null && Crypto.Str(p, "text") == (string)e["text"] && Crypto.Str(p, "title") == (string)e["title"];
+                    Check(good, "Python envelope " + e["name"] + ": " + why); if (good) ok++;
+                    Check(Crypto.Open(Crypto.Random(32), Crypto.BotToPet, (string)e["env"], out why) == null && why == "bad signature", "wrong key not rejected");
+                }
+                Console.WriteLine("Python -> C#: " + ok + "/" + n + " Python-sealed max-size messages verified and decrypted by Crypto.Open");
+                Console.WriteLine(fails == 0 ? "ALL PASSED" : fails + " FAILED"); return fails == 0 ? 0 : 1;
+            }
+
+            string re = Crypto.Hex(Crypto.Random(12)), bot = "research";
+            Console.WriteLine("JavaScriptSerializer here writes: " + json.Serialize("\u00e9\u6f22\U0001F600<\"\n"));
+            // 1.1.5 behaviour: the reply box allowed 1500 characters (UTF-16 units) and nothing checked the sealed size
+            Console.WriteLine("\n1.1.5 (MaxLength 1500, no size check)        sealed  >4096?");
+            foreach (var u in Units)
+            {
+                int bytes = Relay.ReplyEnvelopeBytes(bot, Rep(u[1], 1500), re);
+                Console.WriteLine(string.Format("  1500 chars of {0,-16} {1,8} B  {2}", u[0], bytes, bytes > 4096 ? "OVER: arrives as a file, never read" : "ok"));
+            }
+            // 1.1.6: what fits, and the notice for what doesn't
+            Console.WriteLine("\n1.1.6 limit " + Crypto.MaxEnvelopeBytes + " B          max chars  sealed   notice at 1500 chars");
+            var envs = new List<object>(); byte[] key = Crypto.Random(32);
+            foreach (var u in Units)
+            {
+                string big = Rep(u[1], 6000); int lo = 0, hi = big.Length;
+                while (lo < hi) { int mid = (lo + hi + 1) / 2; if (Relay.ReplyEnvelopeBytes(bot, big.Substring(0, mid), re) <= Crypto.MaxEnvelopeBytes) lo = mid; else hi = mid - 1; }
+                string fit = big.Substring(0, lo), over1 = big.Substring(0, lo + 1);
+                int fb = Relay.ReplyEnvelopeBytes(bot, fit, re);
+                Check(fb <= Crypto.MaxEnvelopeBytes && fb < 4096, u[0] + ": fit " + fb);
+                Check(Relay.ReplyOverPercent(bot, fit, re) == 0 && Relay.ReplyOverPercent(bot, over1, re) > 0, u[0] + ": boundary");
+                // the real seal with a real key has exactly the predicted size, and opens again
+                var payload = new Dictionary<string, object> { { "id", Crypto.Hex(Crypto.Random(12)) }, { "ts", Crypto.NowMs() }, { "from", "user" }, { "bot", bot }, { "text", fit }, { "re", re } };
+                string env = Crypto.Seal(key, Crypto.PetToBot, payload); string why;
+                Check(Crypto.Utf8Bytes(env) == fb, u[0] + ": predicted size " + fb + " vs real " + Crypto.Utf8Bytes(env));
+                var back = Crypto.Open(key, Crypto.PetToBot, env, out why); Check(back != null && Crypto.Str(back, "text") == fit, u[0] + ": round trip " + why);
+                envs.Add(new Dictionary<string, object> { { "name", u[0] }, { "text", fit }, { "env", env }, { "bytes", Crypto.Utf8Bytes(env) } });
+                int pct = Relay.ReplyOverPercent(bot, Rep(u[1], 1500), re);
+                Console.WriteLine(string.Format("  {0,-26} {1,7}  {2,6} B   {3}", u[0], lo, fb, pct == 0 ? "(fits, sent)" : Relay.TooLongNotice(pct)));
+            }
+            // random sweep: ReplyOverPercent == 0 exactly when the sealed reply fits
+            var rnd = new Random(7); int acc = 0, refd = 0;
+            for (int i = 0; i < 400; i++)
+            {
+                var u = Units[rnd.Next(Units.Length)]; string t = Rep(u[1], rnd.Next(1, 3500));
+                int b = Relay.ReplyEnvelopeBytes(bot, t, re), pct = Relay.ReplyOverPercent(bot, t, re);
+                Check((pct == 0) == (b <= Crypto.MaxEnvelopeBytes), "sweep " + i); if (pct == 0) acc++; else refd++;
+                if (pct > 0) Check(pct >= 1 && pct <= 99, "pct range " + pct);
+            }
+            Console.WriteLine("sweep: " + acc + " fit, " + refd + " refused with a notice; every accepted reply < 4096 B");
+            File.WriteAllText(file, json.Serialize(new Dictionary<string, object> { { "key", Convert.ToBase64String(key) }, { "envs", envs } }), new UTF8Encoding(false));
+            Console.WriteLine("wrote " + envs.Count + " C#-sealed max-size replies to " + file);
+            Console.WriteLine(fails == 0 ? "ALL PASSED" : fails + " FAILED"); return fails == 0 ? 0 : 1;
+        }
+    }
+}

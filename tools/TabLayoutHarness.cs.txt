@@ -1,0 +1,561 @@
+// Box check of the 1.2.0/1.2.1 Tabs skin maths (TabLayout.cs) and, with --render DIR, preview PNGs of the tab and shelf drawing
+// (TabRender.cs). No windows are created.
+// Build: mcs -nowarn:649 -out:/tmp/th.exe -r:System.Drawing.dll -r:System.Core.dll src/TabLayout.cs src/TabRender.cs src/HitPad.cs tools/TabLayoutHarness.cs.txt
+//   mono /tmp/th.exe                 (logic checks)
+//   mono /tmp/th.exe --render /tmp/r (also writes preview images)
+using System; using System.Collections.Generic; using System.Drawing; using System.Linq;
+namespace BotBeacons
+{
+    static class TabLayoutHarness
+    {
+        static int fails, cases;
+        static void Check(bool ok, string what) { cases++; if (!ok) { fails++; if (fails <= 40) Console.WriteLine("  FAIL " + what); } }
+
+        static TabEdge Nearest(Rectangle w, Point p)
+        {
+            int x = Math.Max(w.Left, Math.Min(w.Right - 1, p.X)), y = Math.Max(w.Top, Math.Min(w.Bottom - 1, p.Y));
+            int[] d = { x - w.Left, w.Right - 1 - x, y - w.Top, w.Bottom - 1 - y }; int m = Math.Min(Math.Min(d[0], d[1]), Math.Min(d[2], d[3]));
+            var ok = new List<TabEdge>(); if (d[0] == m) ok.Add(TabEdge.Left); if (d[1] == m) ok.Add(TabEdge.Right); if (d[2] == m) ok.Add(TabEdge.Top); if (d[3] == m) ok.Add(TabEdge.Bottom);
+            return ok[0];
+        }
+        static int EdgeDist(Rectangle w, Point p, TabEdge e)
+        {
+            int x = Math.Max(w.Left, Math.Min(w.Right - 1, p.X)), y = Math.Max(w.Top, Math.Min(w.Bottom - 1, p.Y));
+            return e == TabEdge.Left ? x - w.Left : e == TabEdge.Right ? w.Right - 1 - x : e == TabEdge.Top ? y - w.Top : w.Bottom - 1 - y;
+        }
+
+        // independent seam check: sample the band just past the edge; a seam if at least half of it is another monitor
+        static bool SeamRef(Rectangle[] work, int si, TabEdge e) { return SeamRatio(work, si, e) >= 0.5; }
+        static double SeamRatio(Rectangle[] work, int si, TabEdge e)
+        {
+            var w = work[si]; bool v = e == TabEdge.Left || e == TabEdge.Right; int len = v ? w.Height : w.Width, hit = 0, n = 0;
+            for (int a = 0; a < len; a += 4)
+            {
+                n++; bool any = false;
+                for (int dpx = 1; dpx <= TabLayout.SeamReach && !any; dpx += 3)
+                {
+                    var p = e == TabEdge.Left ? new Point(w.Left - dpx, w.Top + a) : e == TabEdge.Right ? new Point(w.Right - 1 + dpx, w.Top + a) : e == TabEdge.Top ? new Point(w.Left + a, w.Top - dpx) : new Point(w.Left + a, w.Bottom - 1 + dpx);
+                    for (int i = 0; i < work.Length; i++) if (i != si && work[i].Contains(p)) any = true;
+                }
+                if (any) hit++;
+            }
+            return hit / (double)n;
+        }
+        static TabEdge NearestOuter(Rectangle[] work, int si, Point p)
+        {
+            var w = work[si]; TabEdge best = TabEdge.Right; int bd = int.MaxValue; bool all = true;
+            foreach (var e in new[] { TabEdge.Right, TabEdge.Left, TabEdge.Bottom, TabEdge.Top }) if (!SeamRef(work, si, e)) all = false;
+            foreach (var e in new[] { TabEdge.Right, TabEdge.Left, TabEdge.Bottom, TabEdge.Top })
+            { if (!all && SeamRef(work, si, e)) continue; int dd = EdgeDist(w, p, e); if (dd < bd) { bd = dd; best = e; } }
+            return best;
+        }
+
+        static void Main(string[] args)
+        {
+            foreach (var sc in new[] { 1.1f, 1.4f, 1.7f }) { TabLayout.Scale = sc; Run(sc); Run122(sc); Run123(sc); }
+            Run125();
+            Console.WriteLine((fails == 0 ? "OK" : "FAILED") + ": " + cases + " checks, " + fails + " failures.");
+            int ri = Array.IndexOf(args, "--render");
+            if (ri >= 0 && ri + 1 < args.Length) { foreach (var sz in new[] { "small", "normal", "large" }) { TabLayout.Scale = TabLayout.ScaleFor(sz); Render(System.IO.Path.Combine(args[ri + 1], sz)); } }
+            Environment.Exit(fails == 0 ? 0 : 1);
+        }
+
+        // ---- 1.2.2: per-beacon floating/tab by dragging, the picture inside a collapsed tab, taskbars, the tab card
+        // 1.2.3: throw to dock, the settle, the beacon picture and its colour ring
+        static void Run123(float scale)
+        {
+            string tag = " @" + scale;
+            var pc = new[] { new Rectangle(0, 0, 1920, 1032), new Rectangle(1920, 0, 1920, 1080) };
+            TabDock d;
+            Check(TabLayout.ImpactDock(pc, new Point(3839, 270), TabEdge.Right, out d) && d.Screen == 1 && d.Edge == TabEdge.Right && Math.Abs(d.Along - TabLayout.AlongFor(pc[1], TabEdge.Right, 270)) < 1e-4, "thrown into the far right edge docks there at the impact point" + tag);
+            Check(TabLayout.ImpactDock(pc, new Point(0, 500), TabEdge.Left, out d) && d.Screen == 0 && d.Edge == TabEdge.Left, "far left edge docks" + tag);
+            Check(!TabLayout.ImpactDock(pc, new Point(1919, 500), TabEdge.Right, out d), "the seam (primary's right) is not a dock" + tag);
+            Check(!TabLayout.ImpactDock(pc, new Point(1920, 500), TabEdge.Left, out d), "the seam (second screen's left) is not a dock" + tag);
+            Check(TabLayout.ImpactDock(pc, new Point(800, 1031), TabEdge.Bottom, out d) && d.Screen == 0 && d.Edge == TabEdge.Bottom, "bottom (above the taskbar) docks" + tag);
+            Check(TabLayout.ImpactDock(pc, new Point(2500, 0), TabEdge.Top, out d) && d.Screen == 1 && d.Edge == TabEdge.Top, "top docks" + tag);
+            var stack = new[] { new Rectangle(0, 0, 1920, 1040), new Rectangle(0, 1080, 1920, 1040) };
+            Check(!TabLayout.ImpactDock(stack, new Point(900, 1039), TabEdge.Bottom, out d), "stacked screens: the seam between them (taskbar between) is not a dock" + tag);
+            Check(TabLayout.ImpactDock(stack, new Point(900, 2119), TabEdge.Bottom, out d) && d.Screen == 1, "stacked screens: the lower screen's bottom docks" + tag);
+            var rnd = new Random(1230 + (int)(scale * 10));
+            for (int i = 0; i < 3000; i++)
+            {
+                var e = (TabEdge)rnd.Next(4); var p = new Point(rnd.Next(-50, 3890), rnd.Next(-50, 1130));
+                if (TabLayout.ImpactDock(pc, p, e, out d))
+                {
+                    Check(!TabLayout.Inner(pc, d.Screen, e) && d.Along >= 0 && d.Along <= 1, "impact dock outer and in range " + p + " " + e + tag);
+                    var r = TabLayout.TabWindow(pc[d.Screen], e, (int)(d.Along * Math.Max(0, TabLayout.EdgeLength(pc[d.Screen], e) - TabLayout.WinLength))); Check(pc[d.Screen].Contains(r), "thrown tab's window inside its monitor " + r + tag);
+                }
+            }
+            // seam dwell (DISPLAY1 right meets DISPLAY3 left at x=1920): a pass-through never docks; holding still docks on
+            // the seam edge of the monitor the cursor is on
+            Check(TabLayout.SeamAt(pc, new Point(1915, 400), 12, out d) && d.Screen == 0 && d.Edge == TabEdge.Right, "near the seam on monitor 1: its right edge" + tag);
+            Check(TabLayout.SeamAt(pc, new Point(1925, 400), 12, out d) && d.Screen == 1 && d.Edge == TabEdge.Left, "just past it on monitor 2: its left edge" + tag);
+            Check(!TabLayout.SeamAt(pc, new Point(1890, 400), 12, out d), "30 px away: not near the seam" + tag);
+            Check(!TabLayout.SeamAt(pc, new Point(3835, 400), 12, out d), "an outer edge is not a seam" + tag);
+            var sd = new SeamDwell(); bool armed = false;
+            for (int i = 0; i <= 60; i++) armed |= sd.Update(pc, new Point(1700 + i * 8, 400), i * 0.016);   // a normal drag across
+            Check(!armed, "a drag across the seam never arms" + tag);
+            sd.Reset(); armed = false;
+            for (int i = 0; i <= 80; i++) armed |= sd.Update(pc, new Point(1880 + i, 400), i * 0.016);   // creeping at ~60 px/s, crossing at the end
+            Check(!armed, "a slow creep that keeps moving crosses (it must be held)" + tag);
+            sd.Reset();
+            double t0 = 0; for (int i = 0; i < 20; i++) sd.Update(pc, new Point(1880 + i * 2, 500), t0 += 0.016);   // creep to 1918
+            bool at04 = false, at06 = false;
+            for (double t = 0; t <= 0.62; t += 0.02) { bool a2 = sd.Update(pc, new Point(1915 + (int)(3 * Math.Sin(t * 30)), 500), t0 + t); if (t < 0.4) at04 |= a2; else if (t > 0.55) at06 = a2; }
+            Check(!at04 && at06, "held (with a 3 px tremble) for 0.5 s arms" + tag);
+            Check(sd.Dock.Screen == 0 && sd.Dock.Edge == TabEdge.Right && pc[0].Contains(TabLayout.Preview(pc[0], sd.Dock)), "armed dock on monitor 1's right edge, preview on monitor 1" + tag);
+            var slot = TabLayout.TabWindow(pc[0], TabEdge.Right, 300); Check(pc[0].Contains(slot) && slot.Right == 1920, "a seam tab sits inside monitor 1 against the seam (slides out into monitor 1)" + tag);
+            Check(sd.Update(pc, new Point(1912, 640), t0 + 0.7), "armed: sliding along the seam keeps it" + tag);
+            Check(!sd.Update(pc, new Point(1928, 640), t0 + 0.72), "moving on past the seam cancels it" + tag);
+            Check(!sd.Update(pc, new Point(1928, 640), t0 + 0.9) && sd.Update(pc, new Point(1928, 640), t0 + 1.3) && sd.Dock.Screen == 1 && sd.Dock.Edge == TabEdge.Left, "held on the other side: docks on monitor 2's left edge" + tag);
+            sd.Reset(); armed = false; for (int i = 0; i < 110; i++) armed |= sd.Update(pc, new Point(Math.Min(1915, 1880 + i / 2), 450), i * 0.016);   // a very slow creep (~30 px/s) that stops at the seam
+            Check(armed && sd.Dock.Screen == 0, "creeping very slowly up to the seam and stopping docks" + tag);
+            sd.Reset(); sd.Update(pc, new Point(1915, 300), 0); Check(!sd.Update(pc, new Point(1915, 330), 0.6), "moved 30 px along before arming: the hold restarts" + tag);
+            sd.Reset(); sd.Prime(new TabDock { Screen = 0, Edge = TabEdge.Right, Along = 0.3f });
+            Check(sd.Update(pc, new Point(1860, 300), 0, TabLayout.UndockReach), "a seam tab dragged 60 px keeps its seam" + tag);
+            Check(!sd.Update(pc, new Point(1700, 300), 0.1, TabLayout.UndockReach), "dragged 220 px in: it lets go" + tag);
+            sd.Reset(); for (int i = 0; i < 50; i++) armed = sd.Update(stack, new Point(900, 1035), i * 0.016);
+            Check(armed && sd.Dock.Screen == 0 && sd.Dock.Edge == TabEdge.Bottom, "stacked screens: held above the seam docks to the upper screen's bottom" + tag);
+            Check(!TabLayout.ImpactDock(pc, new Point(1919, 400), TabEdge.Right, out d), "throw to dock still ignores seams" + tag);
+
+            // the settle: starts popped out, never past the window, never deeper in than SettleDip, done by SettleTime
+            float lo = 0, hi = 0;
+            for (float t = 0; t < TabLayout.SettleTime; t += 0.01f) { float x = TabLayout.SettleExtra(t); lo = Math.Min(lo, x); hi = Math.Max(hi, x); }
+            Check(TabLayout.SettleExtra(0) > 0 && TabLayout.SettleExtra(TabLayout.SettleTime) == 0 && TabLayout.SettleExtra(-1) == 0, "settle pops out then ends" + tag);
+            Check(TabLayout.Depth + hi <= TabLayout.WinDepth - 4, "settle stays inside the tab window (" + hi + ")" + tag);
+            Check(lo < 0, "the settle wobbles back in a little" + tag);
+            // the picture stays whole through the settle (the dip is floored at Depth - SettleDip), and the ring is the beacon colour
+            var ringC = Color.FromArgb(0, 200, 90);
+            foreach (TabEdge e in Enum.GetValues(typeof(TabEdge)))
+                foreach (var depth in new[] { TabLayout.Depth - TabLayout.SettleDip, TabLayout.Depth, TabLayout.AlertDepth, (int)(TabLayout.Depth + hi) })
+                {
+                    bool across = e == TabEdge.Left || e == TabEdge.Right;
+                    var win = across ? new Rectangle(0, 0, TabLayout.WinDepth, TabLayout.WinLength) : new Rectangle(0, 0, TabLayout.WinLength, TabLayout.WinDepth);
+                    var vis = Rectangle.Intersect(TabLayout.Body(e, depth), win); vis.Inflate(-2, -2);
+                    var im = TabLayout.ImageRect(e, depth);
+                    Check(vis.Contains(im), "settling picture " + im + " inside " + vis + " (" + e + ", " + depth + ")" + tag);
+                    using (var pic = new Bitmap(64, 64))
+                    {
+                        using (var g = Graphics.FromImage(pic)) g.Clear(Color.FromArgb(255, 0, 255));
+                        using (var bmp = TabRender.Tab(e, new TabRender.TabLook { Image = pic, Color = ringC, Depth = depth }))
+                        {
+                            int ring = 0, strip = 0, mag = 0; var slack = im; slack.Inflate(2, 2);
+                            for (int y = 0; y < bmp.Height; y++) for (int x = 0; x < bmp.Width; x++)
+                            {
+                                var c = bmp.GetPixel(x, y); bool green = c.A > 200 && c.R < 40 && c.G > 170 && c.B > 60 && c.B < 120;
+                                if (c.A > 200 && c.R > 200 && c.G < 60 && c.B > 200) { mag++; Check(slack.Contains(x, y), "picture pixel outside ImageRect at " + x + "," + y + " (" + e + ")" + tag); }
+                                if (green) { if (slack.Contains(x, y)) ring++; else strip++; }
+                            }
+                            Check(mag > im.Width * im.Height / 2, "picture drawn (" + mag + " px, " + e + ", " + depth + ")" + tag);
+                            Check(ring > im.Width * 2, "beacon-colour ring round the picture (" + ring + " px, " + e + ", " + depth + ")" + tag);
+                            Check(strip > 10, "beacon-colour strip on the tab (" + strip + " px, " + e + ", " + depth + ")" + tag);
+                        }
+                    }
+                }
+            // floating beacon hit pad: visible pixels + Margin (8 px since 1.2.4) take the click; nothing further out; visible pixels untouched
+            // (1.2.4: the solid, tilt-swept pad is checked in tools/ClickHarness.cs.txt)
+            {
+                int W = 60, H = 40; var vis = new bool[W * H];
+                for (int x = 10; x < 20; x++) for (int y = 10; y < 30; y++) vis[y * W + x] = true;      // two "ears" 10 px apart
+                for (int x = 30; x < 40; x++) for (int y = 10; y < 30; y++) vis[y * W + x] = true;
+                var pad = new HashSet<int>(HitPad.Grow(vis, W, H, HitPad.Margin));
+                Check(pad.Contains(20 * W + 25), "the gap between the ears takes the click" + tag);
+                Check(pad.Contains(20 * W + (10 - HitPad.Margin)) && !pad.Contains(20 * W + (9 - HitPad.Margin)), HitPad.Margin + " px margin, not " + (HitPad.Margin + 1) + tag);
+                Check(!pad.Contains(2 * W + 2), "far corner stays click-through" + tag);
+                var fr = new int[W * H]; fr[20 * W + 15] = unchecked((int)0xFF112233); HitPad.Apply(HitPad.Grow(vis, W, H, HitPad.Margin), fr);
+                Check(fr[20 * W + 15] == unchecked((int)0xFF112233) && fr[20 * W + 25] == HitPad.Pixel && fr[2 * W + 2] == 0, "pad writes alpha 1 only where the frame is empty" + tag);
+                if (System.IO.File.Exists("art/beacon-base.png"))
+                    using (var art = new Bitmap("art/beacon-base.png"))
+                    {
+                        var real = HitPad.Build(new[] { art }, HitPad.Margin); var vr = TabRender.Visible(art);
+                        long area = (long)vr.Width * vr.Height;
+                        Check(real.Length >= area * 0.8, "real beacon: the pad covers its body (" + real.Length + " px vs box " + area + ")" + tag);
+                    }
+            }
+
+            // the beacon picture: the sprite (trimmed, fitted, centred) on a disc tinted with the colour
+            using (var sp = new Bitmap(200, 120))
+            {
+                using (var g = Graphics.FromImage(sp)) { g.Clear(Color.Transparent); using (var b = new SolidBrush(Color.FromArgb(255, 0, 255))) g.FillRectangle(b, 150, 20, 40, 80); }
+                Check(TabRender.Visible(sp) == new Rectangle(150, 20, 40, 80), "sprite trimmed to its visible pixels" + tag);
+                using (var bp = TabRender.BeaconPicture(sp, Color.FromArgb(40, 120, 255), 96))
+                {
+                    var c = bp.GetPixel(48, 48); Check(c.R > 200 && c.G < 60 && c.B > 200, "sprite in the middle of the picture" + tag);
+                    var t = bp.GetPixel(48, 3); Check(t.A == 255 && t.B > t.R && t.B > t.G, "background tinted with the beacon colour " + t + tag);
+                    int top = -1, bot = -1; for (int y = 0; y < 96; y++) { var q = bp.GetPixel(48, y); if (q.R > 200 && q.G < 60) { if (top < 0) top = y; bot = y; } }
+                    Check(top >= 8 && bot <= 88 && bot - top >= 66 && Math.Abs((top + bot) / 2 - 48) <= 2, "sprite fitted and centred (" + top + ".." + bot + ")" + tag);
+                }
+            }
+            using (var empty = new Bitmap(10, 10)) using (var bp = TabRender.BeaconPicture(empty, Color.Teal, 96)) Check(bp.GetPixel(48, 48).A == 255, "empty sprite still gives a tinted disc" + tag);
+        }
+
+        static void Run122(float scale)
+        {
+            string tag = " @" + scale;
+            // the PC: two 1920x1080 monitors side by side, taskbar (48 px) on the left one
+            var pc = new[] { new Rectangle(0, 0, 1920, 1032), new Rectangle(1920, 0, 1920, 1080) };
+            TabDock d;
+            Check(TabLayout.DocksFloating(pc, new Point(3830, 500), out d) && d.Screen == 1 && d.Edge == TabEdge.Right, "float dropped 10 px from the outer right edge docks there" + tag);
+            Check(TabLayout.DocksFloating(pc, new Point(3816, 500), out d), "24 px from the edge still docks" + tag);
+            Check(!TabLayout.DocksFloating(pc, new Point(3814, 500), out d), "25 px from the last pixel column stays floating" + tag);
+            Check(!TabLayout.DocksFloating(pc, new Point(3800, 500), out d), "40 px from the edge stays floating" + tag);
+            Check(TabLayout.DocksFloating(pc, new Point(500, 1060), out d) && d.Screen == 0 && d.Edge == TabEdge.Bottom, "dropped on the taskbar docks at the bottom" + tag);
+            Check(TabLayout.DocksFloating(pc, new Point(5, 400), out d) && d.Edge == TabEdge.Left, "outer left edge docks" + tag);
+            Check(TabLayout.DocksFloating(pc, new Point(2500, 3), out d) && d.Screen == 1 && d.Edge == TabEdge.Top, "top edge of the right monitor docks" + tag);
+            Check(!TabLayout.DocksFloating(pc, new Point(1910, 500), out d), "near the seam (left side) does not dock" + tag);
+            Check(!TabLayout.DocksFloating(pc, new Point(1930, 500), out d), "near the seam (right side) does not dock" + tag);
+            Check(TabLayout.Undocks(pc, new Point(960, 540), out d), "a tab dropped mid-screen floats" + tag);
+            Check(!TabLayout.Undocks(pc, new Point(3760, 500), out d), "a tab dropped 80 px in stays a tab" + tag);
+            Check(TabLayout.Undocks(pc, new Point(3758, 500), out d), "82 px in floats" + tag);
+            Check(TabLayout.Undocks(pc, new Point(1925, 300), out d), "a tab dropped at the seam floats (the seam is not an edge)" + tag);
+            Check(!TabLayout.Undocks(pc, new Point(800, 1000), out d), "32 px above the bottom stays a tab" + tag);
+            var sz = new Size(120, 150);
+            var fa = new Rectangle(TabLayout.FloatAt(pc, new Point(960, 540), sz), sz); Check(fa == new Rectangle(900, 465, 120, 150), "floats centred on the drop point " + fa + tag);
+            fa = new Rectangle(TabLayout.FloatAt(pc, new Point(1915, 1030), sz), sz); Check(pc[0].Contains(fa), "float near the seam/taskbar stays on that monitor " + fa + tag);
+            var rnd = new Random(1220 + (int)(scale * 10));
+            for (int i = 0; i < 4000; i++)
+            {
+                var p = new Point(rnd.Next(-100, 3940), rnd.Next(-100, 1180));
+                TabDock a, b; bool dk = TabLayout.DocksFloating(pc, p, out a), un = TabLayout.Undocks(pc, p, out b);
+                Check(!(dk && un), "never both dock and undock at " + p + tag);
+                var f2 = new Rectangle(TabLayout.FloatAt(pc, p, sz), sz);
+                Check(pc.Any(w => w.Contains(f2)), "FloatAt inside one monitor at " + p + " -> " + f2 + tag);
+            }
+
+            // the whole picture inside the visible tab: every edge, every depth a collapsed tab uses
+            var win = new Rectangle(0, 0, 0, 0);
+            foreach (TabEdge e in Enum.GetValues(typeof(TabEdge)))
+                foreach (var depth in new[] { TabLayout.Depth, TabLayout.Depth + TabLayout.NudgeDepth, TabLayout.AlertDepth })
+                {
+                    bool across = e == TabEdge.Left || e == TabEdge.Right;
+                    win = across ? new Rectangle(0, 0, TabLayout.WinDepth, TabLayout.WinLength) : new Rectangle(0, 0, TabLayout.WinLength, TabLayout.WinDepth);
+                    var vis = Rectangle.Intersect(TabLayout.Body(e, depth), win); vis.Inflate(-2, -2);
+                    var im = TabLayout.ImageRect(e, depth);
+                    Check(vis.Contains(im), "picture " + im + " inside the visible tab " + vis + " (" + e + ", depth " + depth + ")" + tag);
+                    // and the renderer really draws it there: a solid magenta picture, found by its pixels
+                    using (var pic = new Bitmap(64, 64)) 
+                    {
+                        using (var g = Graphics.FromImage(pic)) g.Clear(Color.FromArgb(255, 0, 255));
+                        using (var bmp = TabRender.Tab(e, new TabRender.TabLook { Image = pic, Color = Color.Teal, Depth = depth }))
+                        {
+                            int x0 = 9999, y0 = 9999, x1 = -1, y1 = -1;
+                            for (int y = 0; y < bmp.Height; y++) for (int x = 0; x < bmp.Width; x++)
+                            { var c = bmp.GetPixel(x, y); if (c.A > 200 && c.R > 200 && c.G < 60 && c.B > 200) { x0 = Math.Min(x0, x); y0 = Math.Min(y0, y); x1 = Math.Max(x1, x); y1 = Math.Max(y1, y); } }
+                            var drawn = Rectangle.FromLTRB(x0, y0, x1 + 1, y1 + 1);
+                            var slack = im; slack.Inflate(3, 3);
+                            int rim = 6 + (int)Math.Ceiling(2 * 2.2f * scale);   // 1.2.3: the beacon-colour ring (2.2 px a side) sits inside ImageRect
+                            Check(x1 >= 0 && slack.Contains(drawn) && drawn.Width >= im.Width - rim && drawn.Height >= im.Height - rim, "rendered picture " + drawn + " matches ImageRect " + im + " (" + e + ", depth " + depth + ")" + tag);
+                            Check(vis.Contains(drawn), "rendered picture " + drawn + " inside the visible tab " + vis + " (" + e + ")" + tag);
+                        }
+                    }
+                }
+
+            // taskbars trimmed off the work areas (the bottom clipping in 1.2.1)
+            var raw = new[] { new Rectangle(0, 0, 1920, 1080), new Rectangle(1920, 0, 1920, 1080) };
+            var tw = TabLayout.TrimTaskbars(raw, new[] { new Rectangle(0, 1032, 1920, 48), new Rectangle(1920, 1040, 1920, 40) });
+            Check(tw[0] == new Rectangle(0, 0, 1920, 1032) && tw[1] == new Rectangle(1920, 0, 1920, 1040), "both taskbars trimmed " + tw[0] + " " + tw[1]);
+            tw = TabLayout.TrimTaskbars(new[] { new Rectangle(0, 0, 1920, 1032) }, new[] { new Rectangle(0, 1032, 1920, 48) });
+            Check(tw[0] == new Rectangle(0, 0, 1920, 1032), "already-correct work area unchanged");
+            tw = TabLayout.TrimTaskbars(raw, new[] { new Rectangle(0, 0, 62, 1080) });
+            Check(tw[0] == new Rectangle(62, 0, 1858, 1080) && tw[1] == raw[1], "left taskbar trims only its monitor");
+            tw = TabLayout.TrimTaskbars(raw, new[] { new Rectangle(1920, 0, 1920, 40) });
+            Check(tw[1] == new Rectangle(1920, 40, 1920, 1040), "top taskbar");
+            tw = TabLayout.TrimTaskbars(raw, new Rectangle[0]); Check(tw[0] == raw[0] && tw[1] == raw[1], "no taskbars, no change");
+
+            // the tab card goes beside its tab: inside the work area, never over the tab
+            var cs = new Size((int)(380 * scale / 1.4f * 1.3f), (int)(260 * scale / 1.4f * 1.3f));
+            foreach (var w in pc)
+                foreach (TabEdge e in Enum.GetValues(typeof(TabEdge)))
+                    foreach (var along in new[] { 0, 300, TabLayout.EdgeLength(w, e) - TabLayout.WinLength })
+                    {
+                        var slot = TabLayout.TabWindow(w, e, along);
+                        var body = TabLayout.Body(e, TabLayout.AlertDepth); body.Offset(slot.Location);
+                        var r = TabLayout.CardBeside(w, e, slot, cs);
+                        Check(w.Contains(r), "card " + r + " inside " + w + " (" + e + ")" + tag);
+                        Check(!r.IntersectsWith(body), "card " + r + " clear of its tab " + body + " (" + e + ", along " + along + ")" + tag);
+                        Check(!r.IntersectsWith(slot), "1.2.3: card " + r + " clear of the whole tab window " + slot + " (" + e + ")" + tag);
+                    }
+        }
+
+        static void Run(float scale)
+        {
+            // fixed cases: one 1920x1080 monitor with a 48 px taskbar
+            var one = new[] { new Rectangle(0, 0, 1920, 1032) };
+            var d = TabLayout.Snap(one, new Point(1900, 500)); Check(d.Edge == TabEdge.Right && d.Screen == 0, "right edge");
+            Check(Math.Abs(d.Along - (500 - 33) / (1032f - 66)) < 0.01f, "along on the right edge = " + d.Along);
+            Check(TabLayout.Snap(one, new Point(5, 900)).Edge == TabEdge.Left, "left edge");
+            Check(TabLayout.Snap(one, new Point(900, 4)).Edge == TabEdge.Top, "top edge");
+            Check(TabLayout.Snap(one, new Point(900, 1030)).Edge == TabEdge.Bottom, "bottom edge (above the taskbar)");
+            Check(TabLayout.Snap(one, new Point(900, 1070)).Edge == TabEdge.Bottom, "drop on the taskbar -> bottom of the work area");
+            Check(TabLayout.Snap(one, new Point(-50, 300)).Edge == TabEdge.Left, "off screen to the left -> left edge");
+            Check(TabLayout.Snap(one, new Point(1916, 10)).Edge == TabEdge.Right && TabLayout.Snap(one, new Point(1916, 10)).Along == 0f, "corner clamps along to 0");
+            // two monitors: 1920x1080 left (taskbar), 2560x1440 right placed 200 px higher
+            var two = new[] { new Rectangle(0, 0, 1920, 1032), new Rectangle(1920, -200, 2560, 1440) };
+            d = TabLayout.Snap(two, new Point(1915, 400)); Check(d.Screen == 0 && d.Edge != TabEdge.Right, "1.2.1: the seam is not a dock (left monitor)");
+            d = TabLayout.Snap(two, new Point(1925, 400)); Check(d.Screen == 1 && d.Edge != TabEdge.Left, "1.2.1: the seam is not a dock (right monitor)");
+            d = TabLayout.Snap(two, new Point(1000, -150)); Check(d.Screen == 1 || d.Screen == 0, "gap above the left monitor picks a monitor");
+            Check(d.Screen == 0 && d.Edge == TabEdge.Top, "gap above the left monitor -> its top edge (nearest)");
+            d = TabLayout.Snap(two, new Point(4470, 1230)); Check(d.Screen == 1 && (d.Edge == TabEdge.Right || d.Edge == TabEdge.Bottom), "far corner of the right monitor");
+            // monitors left of the primary (negative coordinates)
+            var neg = new[] { new Rectangle(-1280, 100, 1280, 1024), new Rectangle(0, 0, 1920, 1040) };
+            d = TabLayout.Snap(neg, new Point(-1270, 600)); Check(d.Screen == 0 && d.Edge == TabEdge.Left, "left edge of a monitor at negative x");
+
+            // 1.2.1: the user's PC: DISPLAY1 primary 1920x1080 at 0,0 and DISPLAY3 1920x1080 at 1920,0, both with a 40 px
+            // bottom taskbar (work areas 0,0 1920x1040 and 1920,0 1920x1040), 96 DPI. Cross-monitor drops.
+            var PC = new[] { new Rectangle(0, 0, 1920, 1040), new Rectangle(1920, 0, 1920, 1040) };
+            Check(TabLayout.Inner(PC, 0, TabEdge.Right) && TabLayout.Inner(PC, 1, TabEdge.Left), "pc: the 1920 seam is inner on both sides");
+            Check(!TabLayout.Inner(PC, 0, TabEdge.Left) && !TabLayout.Inner(PC, 1, TabEdge.Right) && !TabLayout.Inner(PC, 0, TabEdge.Top) && !TabLayout.Inner(PC, 1, TabEdge.Bottom), "pc: outer edges dock");
+            Action<Point, int, TabEdge, string> drop = (pt, scr, edge, what) =>
+            {
+                var dd = TabLayout.Snap(PC, pt); var pr = TabLayout.Preview(PC[dd.Screen], dd);
+                Check(dd.Screen == scr && dd.Edge == edge, "pc drop " + what + " " + pt + " -> screen " + dd.Screen + " " + dd.Edge + " (want " + scr + " " + edge + ")");
+                Check(PC[scr].Contains(pr), "pc preview on the target monitor " + what + " " + pr);
+                // the committed spot re-lays out to the same strip the preview showed
+                var st = TabLayout.Stack(TabLayout.EdgeLength(PC[dd.Screen], dd.Edge), new[] { dd.Along });
+                Check(TabLayout.TabWindow(PC[dd.Screen], dd.Edge, st[0]) == pr, "pc relayout lands where the preview was " + what);
+            };
+            drop(new Point(3830, 500), 1, TabEdge.Right, "far right of DISPLAY3");
+            drop(new Point(3700, 300), 1, TabEdge.Right, "near the right of DISPLAY3");
+            drop(new Point(3839, 1039), 1, TabEdge.Right, "bottom-right corner of DISPLAY3 (tie -> side)");
+            drop(new Point(2500, 5), 1, TabEdge.Top, "top of DISPLAY3");
+            drop(new Point(2500, 1035), 1, TabEdge.Bottom, "bottom of DISPLAY3 above its taskbar");
+            drop(new Point(2500, 1070), 1, TabEdge.Bottom, "on DISPLAY3's taskbar");
+            drop(new Point(1925, 300), 1, TabEdge.Top, "just past the seam on DISPLAY3 (no longer the seam)");
+            drop(new Point(1925, 800), 1, TabEdge.Bottom, "just past the seam, low, on DISPLAY3");
+            drop(new Point(1915, 300), 0, TabEdge.Top, "just before the seam on DISPLAY1");
+            drop(new Point(10, 500), 0, TabEdge.Left, "left of DISPLAY1");
+            drop(new Point(-40, 500), 0, TabEdge.Left, "off the left of DISPLAY1");
+            drop(new Point(4000, 500), 1, TabEdge.Right, "off the right of DISPLAY3");
+            drop(new Point(900, 3), 0, TabEdge.Top, "top of DISPLAY1");
+            // a tab saved on the seam / unplaced (default right of the primary) shows on DISPLAY3's right edge
+            Check(TabLayout.Outward(PC, 0, TabEdge.Right) == 1, "pc: primary right -> DISPLAY3 right");
+            Check(TabLayout.Outward(PC, 1, TabEdge.Left) == 0, "pc: DISPLAY3 left -> DISPLAY1 left");
+            Check(TabLayout.Outward(PC, 1, TabEdge.Right) == 1 && TabLayout.Outward(PC, 0, TabEdge.Top) == 0, "pc: outer edges stay");
+            var three = new[] { new Rectangle(-1920, 0, 1920, 1040), new Rectangle(0, 0, 1920, 1040), new Rectangle(1920, 0, 1920, 1040) };
+            Check(TabLayout.Outward(three, 0, TabEdge.Right) == 2 && TabLayout.Outward(three, 2, TabEdge.Left) == 0, "three in a row: walks across");
+            // the grip sits on the edge, inside the work area, clear of the strip's tab bodies
+            foreach (TabEdge ge in Enum.GetValues(typeof(TabEdge)))
+            {
+                var wa = PC[1]; int ln = TabLayout.EdgeLength(wa, ge);
+                foreach (var al in new[] { 0f, 0.5f, 1f })
+                {
+                    var stk = TabLayout.Stack(ln, new[] { al, al, al });
+                    var span = TabLayout.TabWindow(wa, ge, stk[0]); foreach (var x in stk) span = Rectangle.Union(span, TabLayout.TabWindow(wa, ge, x));
+                    var gr = TabLayout.Grip(wa, ge, span);
+                    Check(wa.Contains(gr), "grip inside " + ge + " " + al + " " + gr);
+                    Check(ge == TabEdge.Left ? gr.Left == wa.Left : ge == TabEdge.Right ? gr.Right == wa.Right : ge == TabEdge.Top ? gr.Top == wa.Top : gr.Bottom == wa.Bottom, "grip touches its edge " + ge);
+                    foreach (var x in stk) { var body = TabLayout.Body(ge, TabLayout.AlertDepth); body.Offset(TabLayout.TabWindow(wa, ge, x).Location); Check(!body.IntersectsWith(gr), "grip clear of tab bodies " + ge + " " + al + " " + gr + " " + body); }
+                }
+            }
+
+            // stacking
+            int len = 1032, usable = len - TabLayout.WinLength, step = TabLayout.Length + TabLayout.Gap;
+            var s1 = TabLayout.Stack(len, new[] { 0.5f }); Check(s1[0] == (int)Math.Round(0.5f * usable), "single tab centred");
+            var s4 = TabLayout.Stack(len, new[] { 0.5f, 0.5f, 0.5f, 0.5f });
+            for (int i = 1; i < 4; i++) Check(s4[i] - s4[i - 1] >= step, "same spot tabs pushed apart " + i);
+            var sEnd = TabLayout.Stack(len, new[] { 1f, 1f, 1f }); Check(sEnd[2] <= usable && sEnd[0] >= 0 && sEnd[2] - sEnd[1] >= step, "tabs at the end pulled back inside");
+            var sTight = TabLayout.Stack(300, new[] { 0f, 0.2f, 0.4f, 0.6f, 0.8f, 1f, 0.5f }); Check(Array.TrueForAll(sTight, v => v >= 0 && v <= 300 - TabLayout.WinLength), "overflow stays inside");
+            var sOrder = TabLayout.Stack(len, new[] { 0.9f, 0.1f, 0.5f }); Check(sOrder[1] < sOrder[2] && sOrder[2] < sOrder[0], "order follows the saved spots");
+
+            // fuzz: random monitor layouts and drops
+            var rnd = new Random(12);
+            int maxPreviewOut = 0;
+            for (int t = 0; t < 4000; t++)
+            {
+                int n = 1 + rnd.Next(3); var work = new Rectangle[n]; int x = rnd.Next(-3000, 0);
+                for (int i = 0; i < n; i++)
+                {
+                    int w = new[] { 1280, 1366, 1600, 1920, 2560, 3840, 1080 }[rnd.Next(7)], h = new[] { 720, 768, 900, 1080, 1440, 2160, 1920 }[rnd.Next(7)];
+                    int y = rnd.Next(-600, 600), tb = rnd.Next(4) == 0 ? 0 : 48; int side = rnd.Next(4);
+                    var b = new Rectangle(x, y, w, h);
+                    work[i] = side == 0 ? new Rectangle(b.X, b.Y, b.Width, b.Height - tb) : side == 1 ? new Rectangle(b.X, b.Y + tb, b.Width, b.Height - tb) : side == 2 ? new Rectangle(b.X + tb, b.Y, b.Width - tb, b.Height) : new Rectangle(b.X, b.Y, b.Width - tb, b.Height);
+                    x += w;
+                }
+                var p = new Point(rnd.Next(work[0].Left - 300, work[n - 1].Right + 300), rnd.Next(-1000, 2500));
+                var dk = TabLayout.Snap(work, p);
+                var wa = work[dk.Screen];
+                bool inside = false; foreach (var w in work) if (w.Contains(p)) inside = true;
+                if (inside) Check(wa.Contains(p), "monitor under the cursor " + t);
+                var want = NearestOuter(work, dk.Screen, p);
+                bool borderline = false; foreach (TabEdge se in Enum.GetValues(typeof(TabEdge))) if (Math.Abs(SeamRatio(work, dk.Screen, se) - 0.5) <= 0.1) borderline = true;
+                if (!borderline) Check(EdgeDist(wa, p, dk.Edge) == EdgeDist(wa, p, want), "nearest outer edge " + t + " " + dk.Edge + " vs " + want);
+                foreach (TabEdge se in Enum.GetValues(typeof(TabEdge)))
+                    if (Math.Abs(SeamRatio(work, dk.Screen, se) - 0.5) > 0.1) Check(TabLayout.Inner(work, dk.Screen, se) == SeamRef(work, dk.Screen, se), "seam test agrees " + t + " " + se);
+                Check(dk.Along >= 0 && dk.Along <= 1, "along in 0..1 " + t);
+                var pr = TabLayout.Preview(wa, dk);
+                if (!wa.Contains(pr)) { maxPreviewOut++; Check(false, "preview inside the work area " + t + " " + pr + " in " + wa); }
+                // the preview sits where the cursor is along the edge (within half a tab, unless clamped at the ends)
+                int c = dk.Vertical ? pr.Y + pr.Height / 2 : pr.X + pr.Width / 2, pc = dk.Vertical ? Math.Max(wa.Top, Math.Min(wa.Bottom - 1, p.Y)) : Math.Max(wa.Left, Math.Min(wa.Right - 1, p.X));
+                int lo = (dk.Vertical ? wa.Top : wa.Left) + TabLayout.WinLength / 2, hi = (dk.Vertical ? wa.Bottom : wa.Right) - TabLayout.WinLength / 2;
+                if (pc > lo + 1 && pc < hi - 1) Check(Math.Abs(c - pc) <= 1, "preview follows the cursor " + t + " c=" + c + " pc=" + pc);
+                // touching its edge
+                Check(dk.Edge == TabEdge.Left ? pr.Left == wa.Left : dk.Edge == TabEdge.Right ? pr.Right == wa.Right : dk.Edge == TabEdge.Top ? pr.Top == wa.Top : pr.Bottom == wa.Bottom, "preview touches its edge " + t);
+                // a few tabs on that edge: inside, apart, touching the edge
+                int k = 1 + rnd.Next(12); var al = new float[k]; for (int i = 0; i < k; i++) al[i] = (float)rnd.NextDouble();
+                int el = TabLayout.EdgeLength(wa, dk.Edge); var st = TabLayout.Stack(el, al);
+                var sorted = (int[])st.Clone(); Array.Sort(sorted);
+                bool fits = (k - 1) * step <= el - TabLayout.WinLength;
+                for (int i = 0; i < k; i++)
+                {
+                    var r = TabLayout.TabWindow(wa, dk.Edge, st[i]);
+                    Check(wa.Contains(r), "tab inside the work area " + t + " " + r + " in " + wa);
+                    if (fits && i > 0) Check(sorted[i] - sorted[i - 1] >= step, "tabs apart " + t);
+                }
+                // the shelf: inside, touching its edge, covering the tabs' run where it can
+                var span = TabLayout.TabWindow(wa, dk.Edge, sorted[0]); span = Rectangle.Union(span, TabLayout.TabWindow(wa, dk.Edge, sorted[k - 1]));
+                var sh = TabLayout.Shelf(wa, dk.Edge, span, dk.Vertical ? new Size(344, 420) : new Size(760, 136));
+                Check(wa.Contains(sh), "shelf inside " + t + " " + sh + " in " + wa);
+                Check(dk.Edge == TabEdge.Left ? sh.Left == wa.Left : dk.Edge == TabEdge.Right ? sh.Right == wa.Right : dk.Edge == TabEdge.Top ? sh.Top == wa.Top : sh.Bottom == wa.Bottom, "shelf touches its edge " + t);
+            }
+            // slide
+            foreach (TabEdge e in Enum.GetValues(typeof(TabEdge)))
+            {
+                var sz = new Size(344, 420);
+                Check(TabLayout.SlideOffset(e, sz, 1f) == Point.Empty, "slide fully out " + e);
+                var o0 = TabLayout.SlideOffset(e, sz, 0f); Check(Math.Abs(o0.X) == (TabRender.Vertical(e) ? 344 : 0) && Math.Abs(o0.Y) == (TabRender.Vertical(e) ? 0 : 420), "slide fully in " + e);
+                var b = TabLayout.Body(e, TabLayout.AlertDepth); Check(new Rectangle(0, 0, TabRender.Vertical(e) ? TabLayout.WinDepth : TabLayout.WinLength, TabRender.Vertical(e) ? TabLayout.WinLength : TabLayout.WinDepth).Contains(b), "alert body inside its window " + e);
+                string nm = TabLayout.EdgeName(e); TabEdge back; Check(TabLayout.TryEdge(nm, out back) && back == e, "edge name round trip " + e);
+            }
+        }
+
+        // 1.2.5: the attention "!" badge and the glow are inside the tab window (and so inside the monitor's work area) for every
+        // edge, Size, DPI scale and depth (resting, nudged, popped out, the throw wobble and anything deeper, which is clamped),
+        // both by geometry (TabLayout.BadgeRect/GlowRect) and by the real pixels: nothing drawn touches the three window sides
+        // that face into the screen (only the body runs off the screen-edge side), and the badge's red is really there.
+        static bool Inside(RectangleF r, Size win, float pad) { return r.Left >= pad && r.Top >= pad && r.Right <= win.Width - pad && r.Bottom <= win.Height - pad; }
+        static void Run125()
+        {
+            var sizes = new[] { "small", "normal", "large" }; var dpis = new[] { 1f, 1.25f, 1.5f, 1.75f, 2f, 2.25f, 2.5f, 3f };
+            var work = new[] { new Rectangle(0, 0, 1920, 1040), new Rectangle(1920, -200, 1280, 1024), new Rectangle(-1366, 300, 1366, 728) };
+            foreach (var sz in sizes) foreach (var dpi in dpis)
+            {
+                TabLayout.Scale = TabLayout.ScaleFor(sz) * dpi; string tg0 = " [" + sz + " @" + (int)(dpi * 100) + "%]";
+                var depths = new List<float>(); for (float d = TabLayout.Depth - TabLayout.SettleDip; d <= TabLayout.MaxDepth + TabLayout.Scale * 30; d += 1f) depths.Add(d);
+                foreach (TabEdge e in Enum.GetValues(typeof(TabEdge)))
+                {
+                    var win = TabLayout.WinSize(e); string tg = tg0 + " " + e;
+                    Check(TabLayout.AlertDepth <= TabLayout.MaxDepth && TabLayout.MaxDepth < TabLayout.WinDepth, "pop-out within the clamp, clamp within the window" + tg);
+                    foreach (var d in depths)
+                    {
+                        Check(Inside(TabLayout.BadgeRect(e, d), win, 1f), "badge+halo inside window at depth " + d + tg + " " + TabLayout.BadgeRect(e, d) + " in " + win);
+                        Check(Inside(TabLayout.GlowRect(e, d), win, 1f), "glow+waves inside window at depth " + d + tg);
+                        // the badge overlaps the frame: its centre is inside the body, its disc crosses the body's outer end
+                        var b = TabLayout.BadgeRect(e, d); var body = TabLayout.Body(e, (int)Math.Round(Math.Min(d, TabLayout.MaxDepth)));
+                        var bc = new PointF(b.X + b.Width / 2, b.Y + b.Height / 2);
+                        Check(body.Contains(Point.Round(bc)), "badge centre on the body" + tg + " d=" + d);
+                    }
+                    // the window itself sits inside the work area wherever the tab is along the edge
+                    foreach (var w in work) for (int n = 1; n <= 12; n += 5)
+                    {
+                        bool v = e == TabEdge.Left || e == TabEdge.Right; int len = v ? w.Height : w.Width;
+                        var al = new float[n]; for (int i = 0; i < n; i++) al[i] = n == 1 ? 0f : i / (float)(n - 1);
+                        var starts = TabLayout.Stack(len, al);
+                        foreach (var st in starts.Concat(new[] { TabLayout.Stack(len, new[] { 1f })[0] }))
+                        {
+                            var r = TabLayout.TabWindow(w, e, st);
+                            Check(w.Contains(r), "tab window inside the work area" + tg + " " + r + " in " + w);
+                            var br = TabLayout.BadgeRect(e, TabLayout.MaxDepth); br.Offset(r.Location);
+                            Check(new RectangleF(w.X, w.Y, w.Width, w.Height).Contains(br), "badge inside the work area" + tg);
+                        }
+                    }
+                }
+                // pixels (every 2nd dpi to keep it quick; all edges and depths of interest)
+                if (Array.IndexOf(dpis, dpi) % 2 == 0 || dpi == 1.25f)
+                    foreach (TabEdge e in Enum.GetValues(typeof(TabEdge)))
+                        foreach (var d in new[] { TabLayout.Depth - TabLayout.SettleDip, TabLayout.Depth, TabLayout.AlertDepth, TabLayout.MaxDepth, TabLayout.MaxDepth + TabLayout.Scale * 30 })
+                            foreach (var pulse in new[] { 0f, 1f })
+                                using (var t = TabRender.Tab(e, new TabRender.TabLook { Color = Color.MediumPurple, Attention = true, Depth = d, Pulse = pulse }))
+                                {
+                                    string tg = tg0 + " " + e + " d=" + d + " pulse=" + pulse; int touch = 0, red = 0;
+                                    for (int y = 0; y < t.Height; y++) for (int x = 0; x < t.Width; x++)
+                                    {
+                                        var c = t.GetPixel(x, y); if (c.A == 0) continue;
+                                        bool edgeSide = (e == TabEdge.Left && x == 0) || (e == TabEdge.Right && x == t.Width - 1) || (e == TabEdge.Top && y == 0) || (e == TabEdge.Bottom && y == t.Height - 1);
+                                        bool border = x == 0 || y == 0 || x == t.Width - 1 || y == t.Height - 1;
+                                        if (border && !edgeSide) touch++;
+                                        if (c.A > 200 && c.R > 200 && c.G < 90 && c.B < 90) red++;
+                                    }
+                                    Check(touch == 0, touch + " drawn px touch an inner window side (clipped)" + tg);
+                                    Check(red > 20, "the red badge is drawn (" + red + " px)" + tg);
+                                }
+            }
+            TabLayout.Scale = 1.4f;
+        }
+
+        static void Render(string dir)
+        {
+            System.IO.Directory.CreateDirectory(dir);
+            var cols = new[] { Color.FromArgb(56, 189, 248), Color.FromArgb(123, 132, 255), Color.FromArgb(74, 222, 128), Color.FromArgb(251, 146, 60) };
+            var names = new[] { "Research Bot", "Inbox Bot", "Coder Bot", "News Bot" };
+            var purposes = new[] { "Deep dives", "Email triage", "Builds & PRs", "Headlines" };
+            var msgs = new[] { "Summary of the 3 papers you saved is ready.", "Inbox zero: 12 archived, 2 flagged for later.", "Tests passing on main. Nothing to review.", "Breaking story matches your watch list: markets open lower" };
+            var imgs = new Bitmap[4]; for (int i = 0; i < 4; i++) imgs[i] = TabRender.Initials(names[i], cols[i], 96);
+            foreach (TabEdge e in Enum.GetValues(typeof(TabEdge)))
+            {
+                // a strip of tabs as they'd sit on the edge
+                bool v = TabRender.Vertical(e); int step = TabLayout.Length + TabLayout.Gap;
+                using (var strip = new Bitmap(v ? 140 : 4 * step + 60, v ? 4 * step + 60 : 140))
+                {
+                    using (var g = Graphics.FromImage(strip))
+                    {
+                        g.Clear(Color.FromArgb(30, 60, 140));
+                        for (int i = 0; i < 4; i++)
+                        {
+                            var k = new TabRender.TabLook { Image = imgs[i], Color = cols[i], Attention = i == 3, Unread = i == 0, Pulse = 0.8f, Depth = i == 3 ? TabLayout.AlertDepth : TabLayout.Depth, Hot = i == 1 };
+                            using (var t = TabRender.Tab(e, k))
+                            {
+                                int along = 10 + i * step;
+                                int x = v ? (e == TabEdge.Right ? strip.Width - t.Width : 0) : along, y = v ? along : (e == TabEdge.Bottom ? strip.Height - t.Height : 0);
+                                g.DrawImage(t, x, y, t.Width, t.Height);
+                            }
+                        }
+                    }
+                    strip.Save(System.IO.Path.Combine(dir, "tabs_" + TabLayout.EdgeName(e) + ".png"));
+                }
+                // 1.2.5: attention tabs alone on each edge, window outline in cyan (badge + glow must sit inside it)
+                using (var sheet = new Bitmap(3 * (TabLayout.WinSize(e).Width + 30) + 10, TabLayout.WinSize(e).Height + 40))
+                {
+                    using (var g = Graphics.FromImage(sheet))
+                    {
+                        g.Clear(Color.FromArgb(70, 70, 76)); int x = 20;
+                        foreach (var d in new[] { TabLayout.AlertDepth, TabLayout.MaxDepth, TabLayout.MaxDepth + 40 })
+                            using (var t = TabRender.Tab(e, new TabRender.TabLook { Image = imgs[1], Color = cols[1], Attention = true, Pulse = 1f, Depth = d }))
+                            {
+                                g.DrawImage(t, x, 20, t.Width, t.Height);
+                                using (var pen = new Pen(Color.Cyan, 1f)) g.DrawRectangle(pen, x - 1, 19, t.Width + 1, t.Height + 1);
+                                x += t.Width + 30;
+                            }
+                    }
+                    sheet.Save(System.IO.Path.Combine(dir, "attention_" + TabLayout.EdgeName(e) + ".png"));
+                }
+                var m = new TabRender.ShelfModel { Edge = e, TotalTabs = 4, Sounds = "custom", Hot = "row:inbox", Size = TabLayout.Scale < 1.2f ? "small" : TabLayout.Scale > 1.6f ? "large" : "normal" };
+                for (int i = 0; i < 4; i++) m.Rows.Add(new TabRender.ShelfRow { Id = names[i].Split(' ')[0].ToLowerInvariant(), Name = names[i], Purpose = purposes[i], Message = msgs[i], Time = new[] { "17:02", "16:58", "16:41", "17:14" }[i], Image = imgs[i], Color = cols[i], Attention = i == 3, Unread = i == 0, Count = i == 0 ? 2 : 0, Connected = i != 2 });
+                var l = TabRender.Layout(m);
+                using (var bg = new Bitmap(l.Size.Width + 40, l.Size.Height + 40))
+                {
+                    using (var g = Graphics.FromImage(bg)) { g.Clear(Color.FromArgb(30, 60, 140)); using (var s = TabRender.Shelf(m, l, Point.Empty)) g.DrawImage(s, e == TabEdge.Left ? 0 : e == TabEdge.Right ? 40 : 20, e == TabEdge.Top ? 0 : e == TabEdge.Bottom ? 40 : 20, s.Width, s.Height); }
+                    bg.Save(System.IO.Path.Combine(dir, "shelf_" + TabLayout.EdgeName(e) + ".png"));
+                }
+                // 1.2.1: the single-tab hover card, next to its tab and the strip's grip
+                foreach (int ri in new[] { 0, 3 })
+                {
+                    var cm = new TabRender.ShelfModel { Edge = e, Card = true, TotalTabs = 4, Hot = ri == 0 ? "row:" + m.Rows[0].Id : "" };
+                    cm.Rows.Add(m.Rows[ri]);
+                    var cl = TabRender.Layout(cm);
+                    using (var bg = new Bitmap(cl.Size.Width + 40, cl.Size.Height + 40))
+                    {
+                        using (var g = Graphics.FromImage(bg)) { g.Clear(Color.FromArgb(30, 60, 140)); using (var s = TabRender.Shelf(cm, cl, Point.Empty)) g.DrawImage(s, e == TabEdge.Left ? 0 : e == TabEdge.Right ? 40 : 20, e == TabEdge.Top ? 0 : e == TabEdge.Bottom ? 40 : 20, s.Width, s.Height); }
+                        bg.Save(System.IO.Path.Combine(dir, "card_" + TabLayout.EdgeName(e) + "_" + ri + ".png"));
+                    }
+                }
+                var gs = v ? new Size(TabLayout.GripDepth, TabLayout.GripLength) : new Size(TabLayout.GripLength, TabLayout.GripDepth);
+                using (var gb = TabRender.Grip(e, gs, true)) using (var bg = new Bitmap(gs.Width + 20, gs.Height + 20))
+                {
+                    using (var g = Graphics.FromImage(bg)) { g.Clear(Color.FromArgb(30, 60, 140)); g.DrawImage(gb, 10, 10, gb.Width, gb.Height); }
+                    bg.Save(System.IO.Path.Combine(dir, "grip_" + TabLayout.EdgeName(e) + ".png"));
+                }
+            }
+            Console.WriteLine("Previews written to " + dir);
+        }
+    }
+}

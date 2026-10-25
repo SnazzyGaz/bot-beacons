@@ -18,6 +18,7 @@ namespace BotBeacons
         public bool Fallback;   // gets messages addressed to unknown bot ids
         public bool Test;       // test beacon: hidden unless "Show test beacons" is on
         public string AgentId = "";   // the Grok Bot agent this beacon carries messages for (info only)
+        public string Sound = "", AttentionSound = "";   // 1.1.5: WAV file names in sounds\ ("" = theme default)
         // layered art: a shared base beacon + overlay PNGs (same canvas size), eye/lamp tinted at load
         public string Base = "";
         public List<string> Overlays = new List<string>();
@@ -75,6 +76,7 @@ namespace BotBeacons
                     var o = it as Dictionary<string, object>; if (o == null) continue;
                     var d = new BeaconDef { Id = Crypto.Str(o, "id"), Name = Crypto.Str(o, "name"), Purpose = Crypto.Str(o, "purpose"), Art = Crypto.Str(o, "art"), AlertArt = Crypto.Str(o, "alertArt") };
                     d.Base = Crypto.Str(o, "base"); d.AgentId = Crypto.Str(o, "agentId"); d.Gist = Crypto.Str(o, "gist");
+                    d.Sound = Crypto.Str(o, "sound"); d.AttentionSound = Crypto.Str(o, "attentionSound");
                     object ov; if (o.TryGetValue("overlays", out ov) && ov is object[]) foreach (var x in (object[])ov) if (x != null) d.Overlays.Add(x.ToString());
                     try { var t = Crypto.Str(o, "tint"); if (t.Length > 0) d.Tint = ColorTranslator.FromHtml(t); } catch { }
                     object rv; if (o.TryGetValue("eyeR", out rv)) d.EyeR = Convert.ToSingle(rv); if (o.TryGetValue("lampR", out rv)) d.LampR = Convert.ToSingle(rv);

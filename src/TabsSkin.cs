@@ -60,6 +60,7 @@ namespace BotBeacons
         bool down; Point downAt;
 
         public TabWindow(BeaconForm b) { B = b; Text = b.Def.Name; }
+        public double FlashUntil = -1; // 1.2.7: a handoff spark just landed (TabsSkin clock)
 
         public Rectangle BodyOnScreen { get { var r = TabLayout.Body(Edge, (int)Math.Round(DepthNow)); r.Offset(Slot.Location); return r; } }
         public void CancelPress() { down = false; }
@@ -505,8 +506,9 @@ namespace BotBeacons
             {
                 bool hot = !anyDrag && !overPanel && t.Visible && t.BodyOnScreen.Contains(c);
                 if (hot) under = t;
-                t.Hot = hot;
-                float target = t.B.Attention ? TabLayout.AlertDepth : TabLayout.Depth + (t.B.Unread.Count > 0 || hot || CardOf(t.B) != null ? TabLayout.NudgeDepth : 0);
+                bool flash = now < t.FlashUntil;   // 1.2.7: a handoff spark just landed
+                t.Hot = hot || flash;
+                float target = t.B.Attention ? TabLayout.AlertDepth : TabLayout.Depth + (t.B.Unread.Count > 0 || hot || flash || CardOf(t.B) != null ? TabLayout.NudgeDepth : 0);
                 if (t.SettleAt >= 0)
                 {
                     float el = (float)(now - t.SettleAt);
@@ -715,6 +717,27 @@ namespace BotBeacons
             var c = CardOf(t.B);
             if (c != null && HoverOpens && !c.Expanded) { c.Expand(); return; }
             t.B.TabAnchor = t.BodyOnScreen; t.B.OpenBubble(false);
+        }
+
+        // 1.2.7 handoff sparks: where a beacon is on screen right now (its tab, its row on an open shelf, or the floating
+        // beacon), or false if it has no visible place
+        public static bool SparkPoint(BeaconForm b, out Point p)
+        {
+            p = Point.Empty;
+            if (b == null || !OnScreen(b)) return false;
+            if (!Skin.IsTab(b)) { if (!b.Visible) return false; p = b.ArtCenter; return true; }
+            if (!Active) return false;
+            TabWindow t; if (!tabs.TryGetValue(b, out t)) return false;
+            if (t.Visible) { var r = t.BodyOnScreen; p = new Point(r.X + r.Width / 2, r.Y + r.Height / 2); return true; }
+            if (shelf != null && !shelf.IsClosing) { var r = shelf.RowOnScreen(b.Def.Id); if (!r.IsEmpty) { p = new Point(r.X + Math.Min(r.Width / 2, 40), r.Y + r.Height / 2); return true; } }
+            return false;
+        }
+        // a spark landed on this beacon's tab: a short nudge-out and highlight
+        public static void FlashTab(BeaconForm b)
+        {
+            TabWindow t; if (!Active || b == null || !tabs.TryGetValue(b, out t)) return;
+            t.FlashUntil = clock.Elapsed.TotalSeconds + 0.6;
+            if (timer != null && !timer.Enabled) timer.Start();
         }
 
         public static void ShelfAction(ShelfWindow s, TabRender.Hit h, Point at)

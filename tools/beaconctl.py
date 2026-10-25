@@ -23,6 +23,14 @@
   beaconctl.py send BEACON TEXT --re ID      ...as an answer to reply ID (or to a ping)
   beaconctl.py attention BEACON REASON       "needs attention" call to action: stronger alert + "!" badge on the beacon,
                                            the bubble shows REASON and an "Open in chat" link to the beacon's agent chat
+  beaconctl.py handoff FROM TO ["label"] [--dry-run] [--force]
+                                           1.2.7: when bot FROM hands work to bot TO, a small spark flies from FROM's
+                                           beacon to TO's on the PC (no bubble, badge or sound; nothing comes back).
+                                           Only sent to apps 1.2.7+ (the version is learned from probe acks, with one
+                                           silent probe if unknown); older apps would show it as an empty message, so
+                                           it is skipped (exit 0, "handoff skipped"). LABEL: up to 40 chars, optional.
+                                           --dry-run prints the message and its sealed size, sends nothing (no link
+                                           needed); --force skips the version check
   beaconctl.py avatar BEACON FILE [--size 96]  send the bot's profile picture for BEACON (1.2.0 Tabs skin): squared,
                                            shrunk to <= SIZE px and ~24 KB, sent in signed encrypted chunks. Silent on the PC
   beaconctl.py avatar BEACON --clear         remove it again (the tab goes back to initials / the user's custom image)
@@ -47,12 +55,16 @@
   beaconctl.py echo                         one-shot: answer each unhandled reply to the echo beacon
   beaconctl.py forge-test                   post deliberately bad messages (plain, forged, replayed, stale)
   beaconctl.py unpair                       forget the link
+  beaconctl.py skin check DIR               1.2.7: check a skin folder (skin.json, art present and in the folder, sizes,
+                                           no private paths, calm animations). Offline. Exit 0 = OK (warnings allowed)
+  beaconctl.py skin pack DIR [-o OUT.zip]   check, then zip it for %APPDATA%\\BotBeacons\\skins (default DIR.zip
+                                           next to DIR). Only .png .gif .ico .wav .json are packed. See docs/SKINS.md
 
 Data lives in $BEACONS_HOME (default: the folder this script is in): agents.json, and secrets/ (mode 0700/0600).
 Nothing secret is ever printed.
 Protocol: see docs/TECHNICAL.md ("Security model").
 """
-import argparse, base64, hashlib, hmac, json, os, secrets, sys, time, urllib.error, urllib.request, urllib.parse
+import argparse, base64, hashlib, hmac, json, os, re, secrets, sys, time, urllib.error, urllib.request, urllib.parse
 from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
 from cryptography.hazmat.primitives import padding
 from cryptography.hazmat.primitives.asymmetric import ec
@@ -64,6 +76,7 @@ SEEN = os.path.join(SECRETS, "seen.json")
 CURSOR = os.path.join(SECRETS, "cursor.txt")
 INBOX = os.path.join(SECRETS, "inbox.json")     # verified replies + handled state (router idempotency)
 LOCK = os.path.join(SECRETS, ".lock")
+APPVER = os.path.join(SECRETS, "appver.json")   # 1.2.7: the PC app's version from the last probe ack (not secret)
 KEEP_MS = 7 * 24 * 3600 * 1000
 # What the reply router does per beacon (see docs/ROUTER.md).
 AGENTS_FILE = os.path.join(HERE, "agents.json")   # beacon id -> {agentId, name, ping}
@@ -303,8 +316,72 @@ def cmd_probe(a):
     sys.exit(1)
 
 def _ver(v):
-    try: return tuple(int(x) for x in str(v).split(".")[:3])
+    """"1.2.6" -> (1, 2, 6); 1.2.7: a pre-release tag is ignored ("1.2.7-test" -> (1, 2, 7))"""
+    try:
+        parts = str(v).split("-")[0].split("+")[0].split(".")[:3]
+        return tuple(int(x) for x in parts)
     except Exception: return (0,)
+
+def _note_ver(v):
+    """1.2.7: remember the app version from a probe ack (handoff only goes to apps that understand it)"""
+    if not v: return
+    try: _write_secret(APPVER, json.dumps({"ver": str(v)[:32], "at": now_ms()}))
+    except Exception: pass
+
+def _known_ver():
+    """(version string, age in s) from the last probe ack, or (None, None)"""
+    try:
+        d = json.load(open(APPVER)); return str(d["ver"]), max(0, (now_ms() - int(d["at"])) / 1000)
+    except Exception: return None, None
+
+HANDOFF_MIN = (1, 2, 7)
+HANDOFF_LABEL = 40
+VER_FRESH_S = 24 * 3600    # a 1.2.7+ version seen within a day is trusted without asking again
+OLD_RECHECK_S = 6 * 3600   # an older version seen within 6 h: skip without probing again
+
+def handoff_payload(frm, to, label=""):
+    """the handoff message (kind "handoff": the app draws a spark from FROM's beacon to TO's and sends nothing back)"""
+    p = {"id": secrets.token_hex(12), "ts": now_ms(), "from": "bot", "bot": frm, "to": to, "kind": "handoff", "text": "", "silent": "true"}
+    label = " ".join(utf8_clean(label or "").split())
+    if len(label) > HANDOFF_LABEL: label = label[:HANDOFF_LABEL - 1] + "\u2026"
+    if label: p["label"] = label
+    return p
+
+def _beacon_id_ok(b):
+    return isinstance(b, str) and 0 < len(b) <= 64 and not any(c.isspace() for c in b)
+
+def cmd_handoff(a):
+    frm, to = (a.frm or "").strip(), (a.to or "").strip()
+    if not _beacon_id_ok(frm) or not _beacon_id_ok(to): sys.exit("handoff: FROM and TO must be beacon ids (no spaces, up to 64 chars).")
+    if frm.lower() == to.lower(): sys.exit("handoff: FROM and TO must be different beacons.")
+    p = handoff_payload(frm, to, a.label or "")
+    known = load_agents()
+    for b in (frm, to):
+        if b not in known and b not in TEST_ROUTES:
+            print(f"warning: '{b}' is not in agents.json; if the PC has no beacon with that id the spark is skipped.", file=sys.stderr)
+    if a.dry_run:
+        env = seal(secrets.token_bytes(32), B2P, p); n = len(env.encode("utf-8"))
+        print("handoff dry run: nothing sent")
+        print("payload: " + json.dumps(p, ensure_ascii=False, separators=(",", ":")))
+        print(f"sealed size: {n} bytes (limit {MAX_ENVELOPE})")
+        return
+    l = load_link()
+    if not a.force:
+        ver, age = _known_ver()
+        new_enough = ver is not None and _ver(ver) >= HANDOFF_MIN
+        if not (new_enough and age < VER_FRESH_S):
+            if ver is not None and not new_enough and age < OLD_RECHECK_S:
+                print(f"handoff skipped: the PC app is v{ver} (sparks need {'.'.join(map(str, HANDOFF_MIN))}+); nothing sent"); return
+            k, secs, n = _probe(None, 1, 15)
+            if not k:
+                print(f"handoff skipped: the PC app did not answer a version check ({PROBE_FAIL}); nothing sent"); return
+            ver = str(k.get("ver", "?"))
+            if _ver(ver) < HANDOFF_MIN:
+                print(f"handoff skipped: the PC app is v{ver} (sparks need {'.'.join(map(str, HANDOFF_MIN))}+); nothing sent"); return
+    try: env = seal_checked(l["key"], B2P, p)
+    except TooLong as e: sys.exit(f"handoff: too long ({e.n} bytes); use a shorter label or ids")
+    st = post(l["server"], l["down"], env)
+    print(f"handoff {frm} -> {to} sent: HTTP {st}, id {p['id']} (a spark on the PC; nothing comes back)")
 
 def cmd_prefs(a):
     """1.2.6: set a preference on the PC app from the bot (signed, in a probe). Exit 0 = applied, 2 = app too old, 1 = no answer"""
@@ -441,7 +518,8 @@ def read_replies(since=None, strict=True):
             elif str(p.get("id")) in batch: why = "replay"
             else: batch[str(p.get("id"))] = 1
         if why: bad.append((o["id"], why)); continue
-        if p.get("kind") == "probe-ack": PROBE_ACKS.append(p); continue   # silent health-check answers, never replies
+        if p.get("kind") == "probe-ack":   # silent health-check answers, never replies
+            PROBE_ACKS.append(p); _note_ver(p.get("ver")); continue
         good.append(p)
     if strict:
         cut = now_ms() - 2 * MAX_AGE_MS
@@ -649,6 +727,148 @@ def cmd_unpair(a):
         if os.path.exists(p): os.remove(p)
     print("Link forgotten.")
 
+# ---------------------------------------------------------------- skins (1.2.7, offline: no link or keys needed)
+SKIN_EXT = (".png", ".gif", ".ico", ".wav", ".json")
+SKIN_MAX_FILE, SKIN_MAX_TOTAL, SKIN_MAX_FILES, SKIN_MAX_SIDE = 8 << 20, 64 << 20, 400, 1024
+PRIVATE_PATH = re.compile(r"(^[A-Za-z]:[\\/])|(^\\\\)|(^/)|(%[A-Za-z]+%)|(/home/)|(/workspace)|(\\Users\\)|(/Users/)|(AppData)", re.I)
+
+def _img_size(path):
+    with open(path, "rb") as f: h = f.read(26)
+    if h[:4] == b"\x89PNG": return int.from_bytes(h[16:20], "big"), int.from_bytes(h[20:24], "big")
+    if h[:3] == b"GIF": return int.from_bytes(h[6:8], "little"), int.from_bytes(h[8:10], "little")
+    return None
+
+def _skin_resolve(root, name):
+    if not isinstance(name, str) or not name: return None
+    rel = name.replace("\\", "/")
+    if rel.startswith("/") or ":" in rel or ".." in rel.split("/"): return None
+    for cand in (rel, "art/" + rel):
+        full = os.path.realpath(os.path.join(root, cand))
+        if full.startswith(os.path.realpath(root) + os.sep) and os.path.isfile(full): return full
+    return None
+
+def skin_check(d):
+    """returns (errors, warnings, doc, files)"""
+    err, warn = [], []
+    d = os.path.abspath(d)
+    sj = os.path.join(d, "skin.json")
+    if not os.path.isfile(sj): return ["no skin.json in " + d], warn, None, []
+    if os.path.getsize(sj) > 1 << 20: return ["skin.json is over 1 MB"], warn, None, []
+    try: doc = json.load(open(sj, encoding="utf-8"))
+    except Exception as e: return ["skin.json is not valid JSON: %s" % e], warn, None, []
+    if not isinstance(doc, dict): return ["skin.json must be a JSON object"], warn, None, []
+    folder = os.path.basename(d.rstrip("/"))
+    if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9 ._-]{0,63}", folder) or folder.endswith("."): err.append("folder name '%s': use letters, digits, space - _ . (it becomes the theme name in settings)" % folder)
+    for k in ("name", "author", "description", "credits"):
+        if k in doc and not isinstance(doc[k], str): err.append('"%s" must be text' % k)
+    if not doc.get("name"): warn.append('no "name": the menu shows the folder name')
+    if not (doc.get("credits") or doc.get("origin")): warn.append('no "credits": say where the art came from (e.g. "Art AI-generated")')
+    # private paths anywhere in the file
+    def walk(v, where):
+        if isinstance(v, dict):
+            for k, x in v.items(): walk(x, where + "." + k)
+        elif isinstance(v, list):
+            for i, x in enumerate(v): walk(x, "%s[%d]" % (where, i))
+        elif isinstance(v, str) and PRIVATE_PATH.search(v): err.append("%s looks like a private path or folder (%r): use paths relative to the skin folder" % (where, v[:60]))
+    walk(doc, "skin")
+    entries = []
+    for key in ("beacons", "looks"):
+        v = doc.get(key)
+        if v is None: continue
+        if not isinstance(v, list): err.append('"%s" must be a list' % key); continue
+        for i, e in enumerate(v):
+            if not isinstance(e, dict): err.append("%s[%d] is not an object" % (key, i)); continue
+            entries.append((key, i, e))
+    if not entries: err.append("no beacons or looks in skin.json")
+    ids, looks = set(), set()
+    for key, i, e in entries:
+        generic = key == "looks" or str(e.get("generic", "")).lower() == "true"
+        label = e.get("id") or e.get("look") or "%s[%d]" % (key, i)
+        if generic:
+            lid = e.get("look") or e.get("id") or "look%d" % (len(looks) + 1)
+            if not re.fullmatch(r"[A-Za-z0-9._-]{1,64}", str(lid)): err.append("%s: look id %r may only use letters, digits, - _ ." % (label, lid))
+            if lid in looks: err.append("look %r is listed twice" % lid)
+            looks.add(lid)
+        else:
+            if not e.get("id"): err.append('%s[%d] has no "id" (or mark it "generic": true)' % (key, i))
+            elif e["id"] in ids: err.append("id %r is listed twice" % e["id"])
+            ids.add(e.get("id"))
+        names = [e[k] for k in ("art", "alertArt", "base") if e.get(k)]
+        ov = e.get("overlays", [])
+        if not isinstance(ov, list): err.append("%s: overlays must be a list" % label); ov = []
+        if ov and not e.get("base"): err.append("%s: overlays need a base" % label)
+        if not (e.get("art") or e.get("base")) and generic: err.append("%s: a look needs \"art\" or \"base\"" % label)
+        sizes = {}
+        for n in names + ov:
+            if not isinstance(n, str) or os.path.splitext(n)[1].lower() not in (".png", ".gif"): err.append("%s: art %r must be a .png or .gif" % (label, n)); continue
+            f = _skin_resolve(d, n)
+            if not f: err.append("%s: art %r is not in the skin folder" % (label, n)); continue
+            if os.path.getsize(f) > SKIN_MAX_FILE: err.append("%s: %s is over 8 MB" % (label, n))
+            sz = _img_size(f)
+            if not sz: err.append("%s: %s is not a PNG or GIF" % (label, n)); continue
+            if max(sz) > SKIN_MAX_SIDE: err.append("%s: %s is %dx%d (at most %d px a side)" % (label, n, sz[0], sz[1], SKIN_MAX_SIDE))
+            sizes[n] = sz
+        if e.get("base") and len(set(sizes.get(n) for n in [e["base"]] + ov if n in sizes)) > 1: warn.append("%s: base and overlays are not all the same size (they are stretched to the base)" % label)
+        an = e.get("anim")
+        if an is not None and not isinstance(an, dict): err.append("%s: anim must be an object" % label); an = None
+        for src, a in (("skin", doc.get("anim")), (label, an)):
+            if not isinstance(a, dict): continue
+            ie = a.get("idleEvery")
+            if isinstance(ie, list) and ie and isinstance(ie[0], (int, float)) and ie[0] < 12: warn.append("%s: idleEvery starts at %s s: busy beacons make dragging lag; about [18, 45] is calm" % (src, ie[0]))
+            te = a.get("twitchEvery")
+            if isinstance(te, list) and te and isinstance(te[0], (int, float)) and te[0] < 8: warn.append("%s: twitchEvery starts at %s s: about [14, 40] is calm" % (src, te[0]))
+            for act in (a.get("idle") or []) + (a.get("twitches") or []):
+                for st in (act.get("steps") or []) if isinstance(act, dict) else []:
+                    if not isinstance(st, dict): continue
+                    if abs(float(st.get("hop", 0) or 0)) > 8: warn.append("%s: %s hops %s px (keep hops small, <= 6)" % (src, act.get("name"), st.get("hop")))
+                    if str(st.get("flicker", "")).lower() == "true" and src != "skin": warn.append("%s: %s flickers (jittery; a soft pulse is calmer)" % (src, act.get("name")))
+                    if st.get("layer") and st["layer"] not in ov and src != "skin": warn.append("%s: %s moves layer %r, which is not one of its overlays" % (src, act.get("name"), st["layer"]))
+    if doc.get("trayIcon"):
+        f = _skin_resolve(d, doc["trayIcon"])
+        if not f or os.path.splitext(f)[1].lower() not in (".ico", ".png"): err.append("trayIcon %r is not an .ico/.png in the skin folder" % doc["trayIcon"])
+    for k in ("sound", "attentionSound"):
+        for key, i, e in entries:
+            v = e.get(k)
+            if v and os.path.splitext(v)[1].lower() == ".wav" and not (_skin_resolve(d, v) or _skin_resolve(d, "sounds/" + v)): warn.append("%s: %s %r is not in the skin (the PC's sounds folder is used)" % (e.get("id") or e.get("look"), k, v))
+    files, total = [], 0
+    for base, dirs, fs in os.walk(d):
+        dirs[:] = sorted(x for x in dirs if not x.startswith((".", "_")))
+        for f in sorted(fs):
+            full = os.path.join(base, f); rel = os.path.relpath(full, d).replace(os.sep, "/")
+            if f.startswith(".") or os.path.islink(full): continue
+            if os.path.splitext(f)[1].lower() not in SKIN_EXT: warn.append("%s is not a skin file type: it won't be packed" % rel); continue
+            if rel.count("/") > 3: err.append("%s: folders nested too deep" % rel); continue
+            if os.path.getsize(full) > SKIN_MAX_FILE: err.append("%s is over 8 MB" % rel)
+            total += os.path.getsize(full); files.append((full, rel))
+    if len(files) > SKIN_MAX_FILES: err.append("more than %d files" % SKIN_MAX_FILES)
+    if total > SKIN_MAX_TOTAL: err.append("over 64 MB in all")
+    pv = os.path.join(d, "preview.png")
+    if not os.path.isfile(pv): warn.append("no preview.png (a picture of the whole set, shown to people choosing a skin)")
+    elif (_img_size(pv) or (0, 0))[0] > 2048: warn.append("preview.png is wider than 2048 px")
+    return err, warn, doc, files
+
+def cmd_skin(a):
+    err, warn, doc, files = skin_check(a.dir)
+    for w in warn: print("warning: " + w)
+    for e in err: print("ERROR: " + e)
+    if err: print("skin %s: %d problem(s), not OK" % (a.action, len(err))); sys.exit(1)
+    n_b = len(doc.get("beacons") or []); n_l = len(doc.get("looks") or [])
+    print("skin OK: %s (%d beacon entr%s, %d look%s, %d file(s))" % (doc.get("name") or os.path.basename(os.path.abspath(a.dir)), n_b, "y" if n_b == 1 else "ies", n_l, "" if n_l == 1 else "s", len(files)))
+    if a.action != "pack": return
+    import zipfile
+    d = os.path.abspath(a.dir)
+    out = os.path.abspath(a.out or (d.rstrip("/") + ".zip"))
+    if out.startswith(d + os.sep): print("ERROR: the zip can't go inside the skin folder"); sys.exit(1)
+    tmp = out + ".tmp"
+    with zipfile.ZipFile(tmp, "w", zipfile.ZIP_DEFLATED, compresslevel=9) as z:
+        for full, rel in files:
+            zi = zipfile.ZipInfo(rel, date_time=(2026, 1, 1, 0, 0, 0)); zi.compress_type = zipfile.ZIP_DEFLATED; zi.external_attr = 0o644 << 16
+            with open(full, "rb") as f: z.writestr(zi, f.read())
+    os.replace(tmp, out)
+    h = hashlib.sha256(open(out, "rb").read()).hexdigest()
+    print("packed %s (%d KB, %d files, sha256 %s)" % (out, (os.path.getsize(out) + 1023) // 1024, len(files), h))
+    print("install: copy it to %APPDATA%\\BotBeacons\\skins\\ on the PC, then right-click a beacon -> Skin -> Theme")
+
 def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     sp = ap.add_subparsers(dest="cmd", required=True)
@@ -662,6 +882,8 @@ def main():
         p.add_argument("--title"); p.add_argument("--re"); p.add_argument("--name", help="your bot's name, for the new-tab prompt"); p.set_defaults(f=cmd_send)
     p = sp.add_parser("attention"); p.add_argument("bot"); p.add_argument("text"); p.add_argument("--title"); p.add_argument("--name")
     p.set_defaults(f=cmd_send, as_=None, re=None, attention=True)
+    p = sp.add_parser("handoff"); p.add_argument("frm", metavar="FROM"); p.add_argument("to", metavar="TO"); p.add_argument("label", nargs="?", default="")
+    p.add_argument("--dry-run", action="store_true", help="print the message and its sealed size; send nothing"); p.add_argument("--force", action="store_true", help="skip the app version check"); p.set_defaults(f=cmd_handoff)
     p = sp.add_parser("avatar"); p.add_argument("bot", metavar="BEACON"); p.add_argument("file", nargs="?"); p.add_argument("--size", type=int, default=96); p.add_argument("--clear", action="store_true"); p.set_defaults(f=cmd_avatar)
     p = sp.add_parser("pong"); p.add_argument("bot"); p.add_argument("--text", default=DEFAULT_PONG); p.set_defaults(f=cmd_pong)
     p = sp.add_parser("read"); p.add_argument("--since", default="new"); p.add_argument("--bot"); p.add_argument("--json", action="store_true"); p.add_argument("--unhandled", action="store_true"); p.set_defaults(f=cmd_read)
@@ -674,6 +896,7 @@ def main():
     sp.add_parser("echo").set_defaults(f=cmd_echo)
     sp.add_parser("forge-test").set_defaults(f=cmd_forge)
     sp.add_parser("unpair").set_defaults(f=cmd_unpair)
+    p = sp.add_parser("skin", help="check or pack a skin folder (offline)"); p.add_argument("action", choices=["check", "pack"]); p.add_argument("dir"); p.add_argument("-o", "--out", help="zip path for pack (default DIR.zip)"); p.set_defaults(f=cmd_skin)
     a = ap.parse_args(); a.f(a)
 
 if __name__ == "__main__": main()

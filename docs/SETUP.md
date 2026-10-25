@@ -71,7 +71,7 @@ python3 tools/make_beacons.py -o /workspace/beacons/beacons.json \
   --beacon "id=research; name=Research Bot; look=robot; agent=<agent id>; purpose=Research and reports"
   # add one --beacon per bot
 rm -f /workspace/beacons/bot-beacons-src.zip
-python3 -m zipfile -c /workspace/beacons/bot-beacons-src.zip build.bat beacons.json src art sounds tools themes docs README.md LICENSE
+python3 -m zipfile -c /workspace/beacons/bot-beacons-src.zip build.bat beacons.json src art sounds skins tools themes docs README.md LICENSE
 ```
 
 ## Step 5: Check the PC (approval 1)

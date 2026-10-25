@@ -28,6 +28,7 @@ namespace BotBeacons
     class Relay
     {
         public event Action<PetMessage> MessageArrived;
+        public static event Action<string, string, string> HandoffArrived;   // 1.2.7: from, to, label (relay thread)
         public int Rejected;
         Thread thread; volatile bool running;
         readonly JavaScriptSerializer json = new JavaScriptSerializer();
@@ -183,6 +184,15 @@ namespace BotBeacons
                 }
                 // 1.2.0: a bot's profile picture, in chunks (beaconctl avatar). Silent: stored for the Tabs skin, nothing shown or played
                 if (Crypto.Str(p, "kind") == "avatar") { Log.Write("Relay: " + Avatars.Receive(p) + "."); continue; }
+                // 1.2.7: a handoff (beaconctl handoff): one bot passing work to another. Only a spark between the two beacons:
+                // no bubble, glow, badge, sound, history or wake, and nothing is ever sent back (no ack, no reply, no webhook).
+                if (Crypto.Str(p, "kind") == "handoff")
+                {
+                    string hf = Crypto.Str(p, "bot"), ht = Crypto.Str(p, "to"), hl = Crypto.Str(p, "label");
+                    Log.Write("Handoff '" + hf + "' -> '" + ht + "'" + (hl.Length > 0 ? " (label, " + hl.Length + " chars)" : "") + ".");   // the label is never logged
+                    var hh = HandoffArrived; if (hh != null) hh(hf, ht, hl);
+                    continue;
+                }
                 var m = new PetMessage { Id = Crypto.Str(p, "id"), Bot = Crypto.Str(p, "bot"), Title = Crypto.Str(p, "title"), Text = Crypto.Str(p, "text"), Kind = Crypto.Str(p, "kind"), AgentId = Crypto.Str(p, "agent"), BotName = Crypto.Str(p, "name"), Verified = true };   // reason == null: Crypto.Open + CheckFresh passed
                 string rawKind = m.Kind.ToLowerInvariant();
                 m.Silent = rawKind == "probe-ack" || rawKind == "status" || rawKind == "heartbeat" || Crypto.Str(p, "silent").ToLowerInvariant() == "true";

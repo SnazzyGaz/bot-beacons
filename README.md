@@ -45,7 +45,7 @@ It installs for your user only, with no admin rights, and starts the app, which 
 
 ## Themes
 
-You start with three ready-made characters: a cat, a robot and a glowing white orb. They share one body with different accessories, idle animations and colours. Your bot can design fully custom ones for you, each with its own look, idle animation and alert. See [docs/THEMES.md](docs/THEMES.md).
+You start with three ready-made characters: a cat, a robot and a glowing white orb. They share one body with different accessories, idle animations and colours. Your bot can design fully custom ones for you, each with its own look, idle animation and alert. See [docs/THEMES.md](docs/THEMES.md). 1.2.7+: whole character sets come as **skins**: drop one in `%APPDATA%\BotBeacons\skins\` and switch live from right-click → Skin → **Theme** ([docs/SKINS.md](docs/SKINS.md)). Two come with it: **Starter**, the original look (orb, robot and cat), and **Cute**, an example to copy from.
 
 Right-click a beacon (or the tray icon) for one short menu: **Reply to** each bot, **Mark all read**, then **Skin** (all floating or all tabs, bubble style: dark card or cloud, and Animations: Full, Subtle or Off plus the frame rate), **Layout** (tab size, open tabs on click or hover, throw to dock, tab pictures), **Sounds**, **Bots** (show or hide, pause, test beacons, pairing), **Updates**, **Start with Windows**, **About** and **Exit**. Motion is drawn at 60 fps with sub-pixel smoothing by default.
 

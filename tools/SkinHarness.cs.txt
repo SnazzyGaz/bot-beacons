@@ -1,0 +1,273 @@
+// 1.2.7 harness: hot-swappable skins. Zip safety (SkinZip.Install against the fixtures from make_skin_fixtures.py),
+// look assignment (stable, picks, test beacons last), the dressing rules, BeaconConfig end to end with a temporary
+// settings folder (beacons.user.json and tabs.json still win), the skins-folder scan (a dropped zip installs, an edited
+// or deleted skin reloads) and the live switch on real BeaconForms (state kept, failure rolls back).
+// Build and run (from the repo root; Linux/mono, uses the CNG stub; the live part needs a display, e.g. xvfb-run):
+//   python3 tools/make_skin_fixtures.py /tmp/skinfx
+//   d=$(mktemp -d); cp src/*.cs $d/; cp tools/MonoCngStub.cs.txt $d/CngStub.cs; cp tools/SkinHarness.cs.txt $d/SkinHarness.cs
+//   sed -i 's/NoTaskbar.Hook(new ContextMenuStrip())/new ContextMenuStrip()/' $d/*.cs
+//   RES=""; for f in art/*.png; do RES="$RES -resource:$f,$(basename $f)"; done
+//   mcs -langversion:5 -nowarn:618,649,169,414,219 -main:BotBeacons.SkinHarness -out:$d/sk.exe $RES -resource:beacons.json,beacons.json \
+//     -r:System.Windows.Forms.dll -r:System.Drawing.dll -r:System.Web.Extensions.dll -r:System.Security.dll -r:System.Core.dll $d/*.cs
+//   python3 tools/test_skins.py /tmp/skinfx/packed.zip   # optional: a beaconctl-packed zip to install too
+//   HOME=$(mktemp -d) xvfb-run -a mono $d/sk.exe /tmp/skinfx [more.zip ...]
+using System;
+using System.Collections.Generic;
+using System.Drawing;
+using System.IO;
+using System.Linq;
+using System.Web.Script.Serialization;
+
+namespace BotBeacons
+{
+    static class SkinHarness
+    {
+        static int ok, bad;
+        static void Check(bool c, string what) { if (c) { ok++; Console.WriteLine("ok   " + what); } else { bad++; Console.WriteLine("FAIL: " + what); } }
+        static string fx; static string[] extraZips = new string[0];
+        static readonly JavaScriptSerializer js = new JavaScriptSerializer();
+        static Dictionary<string, object> J(string s) { return (Dictionary<string, object>)js.DeserializeObject(s.Replace('\'', '"')); }
+        static Dictionary<string, object> B(Dictionary<string, object> doc, string id) { return ((object[])doc["beacons"]).Cast<Dictionary<string, object>>().FirstOrDefault(d => (string)d["id"] == id); }
+        static string S(Dictionary<string, object> d, string k) { object v; return d != null && d.TryGetValue(k, out v) && v != null ? Convert.ToString(v, System.Globalization.CultureInfo.InvariantCulture) : null; }
+
+        [STAThread]
+        static int Main(string[] args)
+        {
+            fx = args.Length > 0 ? args[0] : "/tmp/skinfx";
+            extraZips = args.Skip(1).ToArray();   // more zips that must install (e.g. a pack you just made)
+            Zips();
+            AssignRules();
+            DressRules();
+            EndToEnd();
+            try { Live(); } catch (Exception ex) { Check(false, "live switch threw " + ex); }
+            Console.WriteLine(bad == 0 ? "SKINS OK (" + ok + " checks)" : bad + " FAILED, " + ok + " ok");
+            return bad == 0 ? 0 : 1;
+        }
+
+        // ------------------------------------------------------------ zips
+        static void Zips()
+        {
+            string root = Path.Combine(Path.GetTempPath(), "skinzip-" + Guid.NewGuid().ToString("N").Substring(0, 6));
+            string skins = Path.Combine(root, "skins"); Directory.CreateDirectory(skins);
+            Func<string, string> Try = n => { try { SkinZip.Install(Path.Combine(fx, n + ".zip"), skins, n); return null; } catch (SkinError e) { return e.Message; } catch (Exception e) { return "OTHER " + e.GetType().Name + ": " + e.Message; } };
+
+            Check(Try("good") == null, "good.zip installs");
+            string g = Path.Combine(skins, "good");
+            Check(File.Exists(Path.Combine(g, "skin.json")) && File.Exists(Path.Combine(g, "art", "a.png")) && File.Exists(Path.Combine(g, "preview.png")), "good.zip: skin.json, art and preview unpacked");
+            Check(!File.Exists(Path.Combine(g, "readme.txt")) && !Directory.Exists(Path.Combine(g, "__MACOSX")) && !File.Exists(Path.Combine(g, ".DS_Store")) && !Directory.Exists(Path.Combine(g, "tools")), "good.zip: txt, exe, __MACOSX and dot files skipped");
+            Check(Try("nested") == null && File.Exists(Path.Combine(skins, "nested", "skin.json")) && !Directory.Exists(Path.Combine(skins, "nested", "My Skin")), "one top folder is stripped");
+            Check(Try("stored") == null, "a stored (uncompressed) zip installs");
+            if (File.Exists(Path.Combine(fx, "packed.zip"))) Check(Try("packed") == null && Skins.Read(Path.Combine(skins, "packed")).Looks.Count == 2, "a zip from beaconctl skin pack installs (test_skins.py)");
+            foreach (var extra in extraZips)
+            {
+                string f = SkinZip.FolderFor(extra), m = null; SkinPack sp = null;
+                try { SkinZip.Install(extra, skins, f); sp = Skins.Read(Path.Combine(skins, f)); } catch (Exception ex) { m = ex.Message; }
+                Check(m == null && sp != null, Path.GetFileName(extra) + " installs and reads (" + (m ?? sp.Name + ": " + sp.ById.Count + " by id, " + sp.Looks.Count + " looks") + ")");
+            }
+            // re-install keeps the old copy
+            File.WriteAllText(Path.Combine(g, "marker.json"), "{}");
+            Check(Try("good") == null && !File.Exists(Path.Combine(g, "marker.json")) && File.Exists(Path.Combine(skins, "_installed", "good.previous", "marker.json")), "re-installing replaces the folder and keeps _installed\\good.previous");
+
+            var expect = new Dictionary<string, string> {
+                { "trav", "unsafe path" }, { "trav2", "unsafe path" }, { "abs", "unsafe path" }, { "drive", "unsafe path" }, { "ads", "unsafe path" },
+                { "back", "unsafe path" }, { "dots", "unsafe path" }, { "deep", "nested too deep" }, { "big", "over 8 MB" }, { "lie", "over 8 MB" },
+                { "total", "over 64 MB" }, { "crc", "CRC" }, { "enc", "encrypted" }, { "method", "unsupported compression" }, { "noskin", "no skin.json" },
+                { "badskin", "missing.png" }, { "traversal-art", "" }, { "huge-art", "1024" }, { "notzip", "not a zip" }, { "dup", "twice" } };
+            foreach (var kv in expect)
+            {
+                string m = Try(kv.Key);
+                Check(m != null && !m.StartsWith("OTHER") && m.Contains(kv.Value), kv.Key + ".zip refused (" + (m ?? "INSTALLED") + ")");
+                Check(!Directory.Exists(Path.Combine(skins, kv.Key)), kv.Key + ".zip: no folder left behind");
+            }
+            Check(!Directory.GetDirectories(skins).Any(d => Path.GetFileName(d).StartsWith(".unpack")), "no .unpack temp folders left");
+            Check(!File.Exists(Path.Combine(root, "evil.png")) && !File.Exists(Path.Combine(skins, "evil.png")) && !File.Exists("/evil.png") && !File.Exists(Path.Combine(Path.GetTempPath(), "evil.png")), "nothing written outside the skin folder");
+
+            // names
+            string why;
+            Check(SkinZip.SafeName("art/a.png", out why) == "art/a.png" && SkinZip.SafeName("./art/./a.png", out why) == "art/a.png", "SafeName keeps normal paths");
+            Check(SkinZip.SafeName("art/ a.png", out why) == null && why.Length > 0, "SafeName refuses padded segments");
+            Check(SkinZip.SafeName("a\u0001.png", out why) == null && why.Length > 0, "SafeName refuses control characters");
+            Check(SkinZip.FolderFor("/x/My Skin (v2).zip") == "My Skin -v2-" && SkinZip.FolderFor("/x/...zip") == "skin" && SkinZip.FolderFor("/x/_hidden.zip") == "hidden", "folder names from zip names");
+            Check(Skins.SafeFolder("cute") && !Skins.SafeFolder("..") && !Skins.SafeFolder("a/b") && !Skins.SafeFolder("_installed") && !Skins.SafeFolder(".unpack-1") && !Skins.SafeFolder(""), "SafeFolder");
+            Check(Skins.Resolve(g, "a.png") != null && Skins.Resolve(g, "art/a.png") != null && Skins.Resolve(g, "../good/art/a.png") == null && Skins.Resolve(g, "/etc/passwd") == null && Skins.Resolve(g, "C:\\x.png") == null, "Resolve stays inside the skin");
+            try { Directory.Delete(root, true); } catch { }
+        }
+
+        // ------------------------------------------------------------ assignment
+        static void AssignRules()
+        {
+            var looks = new List<string> { "x", "y", "z" };
+            var m = Skins.Assign(new[] { "a", "b", "c", "d" }, looks, null, null);
+            Check(m["a"] == "x" && m["b"] == "y" && m["c"] == "z" && m["d"] == "x", "looks go round in list order");
+            var saved = new Dictionary<string, string>(m);
+            // a new bot arrives first in the list: nobody else changes, it gets the least-used look
+            var m2 = Skins.Assign(new[] { "new", "a", "b", "c", "d" }, looks, saved, null);
+            Check(m2["a"] == "x" && m2["b"] == "y" && m2["c"] == "z" && m2["d"] == "x" && m2["new"] == "y", "a new bot takes the least-used look, the others keep theirs (" + m2["new"] + ")");
+            // a bot goes away: the others keep theirs
+            var m3 = Skins.Assign(new[] { "a", "c", "d" }, looks, saved, null);
+            Check(m3["a"] == "x" && m3["c"] == "z" && m3["d"] == "x", "removing a bot changes nobody else");
+            // a look disappears from the skin: only its wearers move
+            var m4 = Skins.Assign(new[] { "a", "b", "c", "d" }, new List<string> { "x", "z" }, saved, null);
+            Check(m4["a"] == "x" && m4["c"] == "z" && m4["d"] == "x" && m4["b"] == "z", "a removed look: only its wearer moves");
+            // picks
+            var picks = new Dictionary<string, string> { { "a", "z" }, { "b", "-" }, { "c", "gone" } };
+            var m5 = Skins.Assign(new[] { "a", "b", "c", "d" }, looks, saved, picks);
+            Check(m5["a"] == "z" && !m5.ContainsKey("b") && m5["c"] == "z" && m5["d"] == "x", "a pick wins, '-' keeps the built-in look, a pick of a missing look falls back");
+            Check(Skins.Assign(new[] { "a" }, new List<string>(), saved, null).Count == 0, "no looks: nobody gets one");
+            var m6 = Skins.Assign(new[] { "A" }, looks, new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase) { { "a", "Y" } }, null);
+            Check(m6["A"] == "y", "ids and looks match case-insensitively");
+            Check(Skins.WriteMap(new Dictionary<string, string> { { "b", "y" }, { "a", "x" } }) == "a:x;b:y", "WriteMap is sorted (stable settings.ini)");
+        }
+
+        // ------------------------------------------------------------ dressing
+        static SkinPack Fixture(out string dir)
+        {
+            dir = Path.Combine(Path.GetTempPath(), "skinfx-" + Guid.NewGuid().ToString("N").Substring(0, 6));
+            Directory.CreateDirectory(dir);
+            SkinZip.Install(Path.Combine(fx, "good.zip"), dir, "s1");
+            return Skins.Read(Path.Combine(dir, "s1"));
+        }
+        static void DressRules()
+        {
+            string tmp; var p = Fixture(out tmp);
+            Check(p.Name == "Fixture" && p.Looks.Count == 2 && p.ById.ContainsKey("robot") && p.Credits.Length > 0, "skin.json read: name, looks, id entries, credits");
+            var root = J("{'version':2,'bubble':'card','anim':{'idleEvery':[3,7]},'beacons':[" +
+                "{'id':'orb','name':'Orb','purpose':'p1','color':'#111111','base':'orb-base.png','overlays':['orb-ring.png'],'eye':[1,2],'anim':{'idle':[]}}," +
+                "{'id':'robot','name':'Robot','color':'#222222','art':'robot.png','sound':'chime.wav'}," +
+                "{'id':'echo','name':'Echo','test':'true','art':'echo.png'}," +
+                "{'id':'cat','name':'Cat','art':'cat.png'}]}");
+            var extra = new List<Dictionary<string, object>> { J("{'id':'newbot','name':'New','art':'beacon.png','color':'#7B84FF'}"), J("{'id':'orb','name':'dup'}") };
+            var assigned = new Dictionary<string, string>(); var notes = new List<string>();
+            var r = Skins.Dress(root, p, extra, null, null, assigned, notes);
+            var orb = B(r, "orb"); var robot = B(r, "robot"); var echo = B(r, "echo"); var cat = B(r, "cat"); var nb = B(r, "newbot");
+            Check(((object[])r["beacons"]).Length == 5 && nb != null, "the skin dresses beacons; extras (added tabs) join once");
+            Check(S(robot, "name") == "Skin Robot" && S(robot, "gist") == "skin gist" && S(robot, "art") == "art/r.png" && S(robot, "color") == "#102030" && S(robot, "skinLook") == "", "matched by id: art, colour, name, gist");
+            Check(S(robot, "sound") == "chime.wav", "matched entry without a sound keeps its sound");
+            Check(S(orb, "art") == "art/a.png" && S(orb, "base") == null && !orb.ContainsKey("overlays") && !orb.ContainsKey("eye"), "a look replaces the whole look (old layers and anchors gone)");
+            Check(S(orb, "name") == "Orb" && S(orb, "purpose") == "p1", "a look never renames a bot");
+            Check(S(orb, "skinDir") == p.Dir && S(orb, "skinLook") == "a", "skinDir and skinLook are set");
+            var oa = (Dictionary<string, object>)orb["anim"];
+            Check(!oa.ContainsKey("idle") && ((object[])oa["idleEvery"]).Length == 2 && Convert.ToInt32(((object[])oa["idleEvery"])[0]) == 18, "a look's anim is the skin's (the built-in idle list is dropped)");
+            Check(S(cat, "skinLook") == "b" && Convert.ToInt32(((object[])((Dictionary<string, object>)cat["anim"])["idleEvery"])[0]) == 20 && ((Dictionary<string, object>)cat["anim"]).ContainsKey("twitchEvery"), "entry anim on top of the skin's anim");
+            Check(S(nb, "skinLook") == "a" && S(echo, "skinLook") == "b", "test beacon picks after the added bot (orb a, cat b, newbot a, echo b)");
+            Check(assigned.Count == 4 && !assigned.ContainsKey("robot"), "assigned lists only the looked beacons");
+            Check(S(r, "bubble") == "card" && S(root, "bubble") == "card" && S(B(root, "orb"), "base") == "orb-base.png", "the input document is not changed");
+            Check(notes.Count == 1 && notes[0].StartsWith("1 beacon(s) by id, 4 with a look"), "a note for the log (" + (notes.Count > 0 ? notes[0] : "") + ")");
+            // a skin with no looks leaves the rest alone
+            var p2 = new SkinPack { Folder = "x", Dir = p.Dir, Doc = J("{'name':'x'}") };
+            var r2 = Skins.Dress(root, p2, null, null, null, null, null);
+            Check(S(B(r2, "orb"), "base") == "orb-base.png" && S(B(r2, "orb"), "skinDir") == null, "no looks: unmatched beacons keep the built-in look");
+            try { Directory.Delete(tmp, true); } catch { }
+        }
+
+        // ------------------------------------------------------------ BeaconConfig end to end (temporary settings folder)
+        static void EndToEnd()
+        {
+            Settings.Load();
+            Directory.CreateDirectory(Skins.Dir);
+            SkinZip.Install(Path.Combine(fx, "good.zip"), Skins.Dir, "s1");
+            string e;
+            var built = BeaconConfig.LoadAll("", out e);
+            Check(e == null && built.All(d => d.ArtDir == "") && BeaconConfig.SkinDir == "", "built-in: no skin dir anywhere");
+            string F = Path.Combine(Settings.Dir, "beacons.json"); string before = File.ReadAllText(F);
+            Settings.Set("theme", "s1");
+            var defs = BeaconConfig.LoadAll(Skins.Active, out e);
+            Check(e == null && BeaconConfig.SkinDir.EndsWith("s1"), "theme=s1 loads (" + e + ")");
+            Func<string, BeaconDef> D = id => defs.First(d => d.Id == id);
+            Check(D("robot").Name == "Skin Robot" && D("robot").Look == "" && D("robot").ArtDir.Length > 0, "robot matched by id");
+            Check(D("orb").Look == "a" && D("cat").Look == "b" && D("echo").Look == "a", "orb a, cat b, echo (test) last: a");
+            Check(File.ReadAllText(F) == before, "beacons.json is never written by a skin");
+            Check(Settings.Get("skinlooks.s1", "") == "cat:b;echo:a;orb:a", "assignments remembered in settings.ini (" + Settings.Get("skinlooks.s1", "") + ")");
+            using (var bmp = BeaconConfig.LoadArt(D("orb").Art, D("orb").ArtDir)) Check(bmp != null && bmp.Width == 60 && bmp.Height == 70, "look art loads from the skin folder");
+            // a new bot (added tab) joins without moving anyone
+            TabStore.Add(new UserTab { Id = "zed", Name = "Zed", Color = "#123456" });
+            defs = BeaconConfig.LoadAll(Skins.Active, out e);
+            Check(D("orb").Look == "a" && D("cat").Look == "b" && D("echo").Look == "a" && D("zed").Look == "b", "an added bot takes a look, nobody else moves (zed " + D("zed").Look + ")");
+            // tabs.json name wins over the skin's name
+            TabStore.Get("robot").Name = "My Robot"; TabStore.Save();
+            defs = BeaconConfig.LoadAll(Skins.Active, out e);
+            Check(D("robot").Name == "My Robot" && TabStore.OriginalName(D("robot")) == "Skin Robot", "tabs.json name wins (original = the skin's)");
+            TabStore.Get("robot").Name = ""; TabStore.Save();
+            // beacons.user.json is applied on top of the skin
+            string O = Path.Combine(Settings.Dir, "beacons.user.json");
+            File.WriteAllText(O, "{\"beacons\":[{\"id\":\"orb\",\"color\":\"#010203\"},{\"id\":\"cat\",\"art\":\"robot.png\"}]}");
+            defs = BeaconConfig.LoadAll(Skins.Active, out e);
+            Check(D("orb").Color.R == 1 && D("orb").Color.B == 3 && D("orb").Look == "a", "beacons.user.json colour wins over the look");
+            Check(D("cat").Art == "robot.png", "beacons.user.json art wins over the look");
+            File.Delete(O);
+            // picks
+            Settings.Set("skinpick.s1", "orb:b;cat:-"); defs = BeaconConfig.LoadAll(Skins.Active, out e);
+            Check(D("orb").Look == "b" && D("cat").ArtDir == "" && D("cat").Look == "" && D("cat").Base == "beacon-base.png", "picks: orb b by hand, cat back to its built-in look (orb " + D("orb").Look + ", cat " + D("cat").Art + " dir=" + D("cat").ArtDir + ")");
+            Check(Settings.Get("skinlooks.s1", "").Contains("orb:a"), "a hand pick doesn't overwrite the remembered look");
+            Settings.Set("skinpick.s1", "");
+            // broken skin / missing skin
+            Directory.CreateDirectory(Path.Combine(Skins.Dir, "broken")); File.WriteAllText(Path.Combine(Skins.Dir, "broken", "skin.json"), "{ nope");
+            defs = BeaconConfig.LoadAll("broken", out e);
+            Check(e != null && defs.Count >= 4 && defs.All(d => d.ArtDir == ""), "a broken skin: built-in look + an error (" + e + ")");
+            defs = BeaconConfig.LoadAll("nosuch", out e);
+            Check(e != null && e.Contains("not there") && defs.All(d => d.ArtDir == ""), "a missing skin: built-in look + an error");
+            Check(Skins.List().Any(s => s.Folder == "broken" && s.Doc == null) && Skins.List().Any(s => s.Folder == "s1" && s.Display == "Fixture"), "List shows good and broken skins (" + string.Join(", ", Skins.List().Select(x => x.Folder + "=" + x.Display).ToArray()) + ")");
+            Settings.Set("theme", "BuiltIn"); Check(Skins.Active == "", "theme=builtin is the built-in look");
+            Settings.Set("theme", "");
+        }
+
+        // ------------------------------------------------------------ live switch on real forms + the folder scan
+        static void Live()
+        {
+            Settings.Set("theme", ""); string e;
+            var defs = BeaconConfig.LoadAll("", out e);
+            for (int i = 0; i < defs.Count; i++) Program.Beacons.Add(new BeaconForm(defs[i], i, defs.Count));
+            var orb = Program.Beacons.First(b => b.Def.Id == "orb");
+            orb.Unread.Add(new PetMessage { Id = "m1", Bot = "orb", Text = "hi" }); orb.History.Add(orb.Unread[0]); orb.Attention = true;
+            string pos = orb.DrawnPos; var size0 = orb.ArtSize; var form0 = orb.Size;
+            Check(orb.LookTag == "built-in", "starts built-in");
+            Check(Skins.Switch("s1", "harness"), "switch to s1 (" + Skins.LastError + ")");
+            Check(orb.LookTag == "look:a" && orb.ArtSize == new Size(60, 70) && orb.ArtSize != size0, "orb wears look a live, new art size " + orb.ArtSize);
+            Check(orb.Unread.Count == 1 && orb.History.Count == 1 && orb.Attention && orb.DrawnPos == pos, "unread, history, attention and position kept (" + pos + " -> " + orb.DrawnPos + ")");
+            Check(Program.Beacons.First(b => b.Def.Id == "robot").Def.Name == "Skin Robot" && Settings.Get("theme", "") == "s1", "robot renamed by the skin; theme=s1 saved");
+            using (var bmp = new Bitmap(orb.Width, orb.Height)) using (var g = Graphics.FromImage(bmp))
+            {
+                bool painted = true; try { orb.PaintFrame(g, 0, 0.5f, 0.5f, 1.0, 0, 0, true); } catch (Exception ex) { painted = false; Console.WriteLine(ex); }
+                Check(painted, "a frame paints with the new art");
+            }
+            Check(Skins.Status().Contains("theme=s1") && Skins.Status().Contains("orb:look:a"), "status line: " + Skins.Status());
+            // failure keeps the current look
+            Check(!Skins.Switch("broken", "harness") && orb.LookTag == "look:a" && BeaconConfig.SkinDir.EndsWith("s1") && Settings.Get("theme", "") == "s1" && Skins.LastError.Length > 0, "a broken skin: switch refused, current look kept");
+            Check(!Skins.Switch("../s1", "harness") && orb.LookTag == "look:a", "a bad folder name is refused");
+            // hand pick through the menu path
+            Skins.Pick("orb", "b");
+            Check(orb.LookTag == "look:b" && orb.ArtSize == new Size(80, 90), "Pick orb -> b applies live");
+            Skins.Pick("orb", "");
+            Check(orb.LookTag == "look:a" && Settings.Get("skinpick.s1", "") == "", "Pick automatic -> back to its look");
+            var menu = Skins.ThemeMenu(orb);
+            typeof(Skins).GetMethod("Fill", System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Static).Invoke(null, new object[] { menu, orb });
+            var texts = menu.DropDownItems.Cast<System.Windows.Forms.ToolStripItem>().Select(x => x.Text + (x is System.Windows.Forms.ToolStripMenuItem && ((System.Windows.Forms.ToolStripMenuItem)x).Checked ? "*" : "")).ToArray();
+            Check(texts[0] == "Built-in" && texts.Contains("Fixture*") && texts.Any(t => t.StartsWith("broken")) && texts.Contains("Look for Orb") && texts.Contains("Assign looks") && texts.Last() == "Open skins folder", "Theme menu: " + string.Join(" | ", texts));
+            // the skin's files change -> reload
+            Skins.Started(null);
+            File.Copy(Path.Combine(Skins.Dir, "s1", "art", "b.png"), Path.Combine(Skins.Dir, "s1", "art", "a.png"), true);
+            Skins.Scan();
+            Check(orb.ArtSize == new Size(80, 90), "an edited skin reloads on the next scan");
+            // a zip dropped into skins\ installs once it has settled
+            string drop = Path.Combine(Skins.Dir, "dropped.zip"); File.Copy(Path.Combine(fx, "good.zip"), drop);
+            File.SetLastWriteTimeUtc(drop, DateTime.UtcNow.AddSeconds(-5));
+            Skins.Scan(); Check(!Directory.Exists(Path.Combine(Skins.Dir, "dropped")), "first scan only notes the zip");
+            Skins.Scan(); Check(Directory.Exists(Path.Combine(Skins.Dir, "dropped")) && !File.Exists(drop) && File.Exists(Path.Combine(Skins.Dir, "_installed", "dropped.zip")), "second scan installs it and keeps the zip in _installed");
+            string badz = Path.Combine(Skins.Dir, "evil.zip"); File.Copy(Path.Combine(fx, "trav.zip"), badz); File.SetLastWriteTimeUtc(badz, DateTime.UtcNow.AddSeconds(-5));
+            Skins.Scan(); Skins.Scan(); Check(File.Exists(badz + ".failed") && !Directory.Exists(Path.Combine(Skins.Dir, "evil")), "a bad zip becomes .zip.failed");
+            Check(!Skins.List().Any(s => s.Folder.StartsWith("_") || s.Folder.StartsWith(".")), "_installed is not listed as a skin");
+            // the active skin is deleted -> built-in
+            Directory.Delete(Path.Combine(Skins.Dir, "s1"), true);
+            Skins.Scan();
+            Check(orb.LookTag == "built-in" && orb.ArtSize == size0 && orb.Size == form0 && Skins.Active == "" && orb.Unread.Count == 1, "deleted skin: back to built-in, same size and state (" + orb.LookTag + " " + orb.ArtSize + "/" + size0 + " " + orb.Size + "/" + form0 + " theme=" + Settings.Get("theme", "x") + ")");
+            Check(Skins.Switch("dropped", "harness") && orb.LookTag.StartsWith("look:") && Skins.Switch("", "harness") && orb.LookTag == "built-in", "switch to the dropped skin and back");
+            foreach (var extra in extraZips)
+            {
+                string f = SkinZip.FolderFor(extra); SkinZip.Install(extra, Skins.Dir, f);
+                bool sw = Skins.Switch(f, "harness");
+                Check(sw && orb.Unread.Count == 1 && orb.DrawnPos == pos, "live switch to " + f + " (layered art built; " + Skins.Status() + (sw ? "" : " " + Skins.LastError) + ")");
+                Check(Skins.Switch("", "harness") && orb.LookTag == "built-in" && orb.Size == form0, "and back to built-in");
+            }
+        }
+    }
+}

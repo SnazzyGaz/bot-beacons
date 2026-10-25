@@ -45,7 +45,7 @@ if ($Exe) {
   $icon = Join-Path (Split-Path $builtExe) "art\icon.ico"
   Say "Using the prebuilt BotBeacons.exe (release zip)."
 } else {
-  if ($Source) { foreach ($n in "build.bat", "beacons.json", "src", "art", "sounds") { $sp = Join-Path $Source $n; if (Test-Path $sp) { Copy-Item $sp $work -Recurse -Force } } }
+  if ($Source) { foreach ($n in "build.bat", "beacons.json", "src", "art", "sounds", "skins") { $sp = Join-Path $Source $n; if (Test-Path $sp) { Copy-Item $sp $work -Recurse -Force } } }
   else { Expand-Archive -Path $Bundle -DestinationPath $work -Force }
   $root = $work
   if (-not (Test-Path (Join-Path $root "build.bat"))) { $sub = Get-ChildItem $work -Directory | Select-Object -First 1; if ($sub) { $root = $sub.FullName } }
@@ -66,6 +66,15 @@ if (Test-Path $icon) { Copy-Item $icon (Join-Path $installDir "icon.ico") -Force
 # 1.1.5: alert sounds go next to the exe (release folder sounds\, or dist\sounds\ from the build)
 $snd = @((Join-Path (Split-Path $builtExe) "sounds"), $(if ($root) { Join-Path $root "sounds" })) | Where-Object { $_ -and (Test-Path (Join-Path $_ "*.wav")) } | Select-Object -First 1
 if ($snd) { New-Item -ItemType Directory -Force -Path (Join-Path $installDir "sounds") | Out-Null; Copy-Item (Join-Path $snd "*.wav") (Join-Path $installDir "sounds") -Force }
+# 1.2.7: bundled skins (Starter = the original look, Cute = an example) go to %APPDATA%\BotBeacons\skins\ once;
+# a skin folder that is already there is never overwritten, and the chosen theme is not changed
+$skinSrc = @((Join-Path (Split-Path $builtExe) "skins"), $(if ($root) { Join-Path $root "skins" })) | Where-Object { $_ -and (Test-Path $_) } | Select-Object -First 1
+if ($skinSrc) {
+  $skinDir = Join-Path $dataDir "skins"; New-Item -ItemType Directory -Force -Path $skinDir | Out-Null
+  foreach ($sk in Get-ChildItem $skinSrc -Directory) {
+    if ((Test-Path (Join-Path $sk.FullName "skin.json")) -and -not (Test-Path (Join-Path $skinDir $sk.Name))) { Copy-Item $sk.FullName (Join-Path $skinDir $sk.Name) -Recurse; Say ("Skin added: " + $sk.Name) }
+  }
+}
 Say "Installed to $installDir"
 
 if ($BeaconsJson) {

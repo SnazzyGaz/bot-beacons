@@ -13,10 +13,10 @@ namespace BotBeacons
     // One beacon: transparent, always-on-top, per-pixel-alpha layered window (UpdateLayeredWindow).
     class BeaconForm : Form
     {
-        public readonly BeaconDef Def;
-        readonly Bitmap idle, alertArt;
-        readonly int cw, ch;   // the window (1.2.5: the art plus Pad on every side)
-        readonly int aw, ah;   // the art itself; everything art-relative (eye, lamp, layers, pivots) is drawn at (Pad, Pad)
+        public BeaconDef Def { get; private set; }   // 1.2.7: replaced (with the art below) when the skin's theme changes
+        Bitmap idle, alertArt;
+        int cw, ch;   // the window (1.2.5: the art plus Pad on every side)
+        int aw, ah;   // the art itself; everything art-relative (eye, lamp, layers, pivots) is drawn at (Pad, Pad)
         // 1.2.5: transparent room round the art so the "!" badge, its halo, the red aura, tilts and hops are never clipped by
         // the window (1.2.4 drew them inside a window exactly the art's size). Alpha-0 pixels pass clicks through.
         public const int Pad = 32;
@@ -49,12 +49,9 @@ namespace BotBeacons
         public BeaconForm(BeaconDef def, int index, int count)
         {
             Def = def;
-            if (def.Layered) { idle = BeaconConfig.Compose(def, false); alertArt = BeaconConfig.Compose(def, true); }
-            if (idle == null) idle = BeaconConfig.LoadArt(def.Art) ?? BeaconConfig.LoadArt("beacon.png");
-            if (alertArt == null) alertArt = BeaconConfig.LoadArt(def.AlertArt) ?? idle;
+            var lk = BuildLook(def);
+            idle = lk.Idle; alertArt = lk.Alert; hitPad = lk.Hit;
             aw = idle.Width; ah = idle.Height; cw = aw + 2 * Pad; ch = ah + 2 * Pad;
-            using (var pi = PadArt(idle)) using (var pa = PadArt(alertArt))
-                hitPad = HitPad.Build(new[] { pi, pa }, HitPad.Margin, Pad + aw / 2f, Pad + ah * 0.42f, HitPad.TiltDeg);   // 1.2.4: solid silhouette, any tilt, + margin
             Cursor = Cursors.Hand;   // over the beacon (its hit pixels); set as the form's Cursor, applied in WM_SETCURSOR
             int seed = 17; foreach (char c in def.Id) seed = seed * 31 + c;
             rnd = new Random(seed);
@@ -72,6 +69,57 @@ namespace BotBeacons
             ClampHome();
             winX = (int)homeX; winY = (int)homeY; posX = winX; posY = winY; Location = new Point(winX, winY);
             timer.Tick += (s, e) => Tick();
+        }
+
+        // 1.2.7: a beacon's look (the idle and alert art and its hit mask), built before anything is swapped so a theme
+        // change that fails half way leaves every beacon as it was
+        public class Look { public BeaconDef Def; public Bitmap Idle, Alert; public int[] Hit; public void Dispose() { if (Alert != null && Alert != Idle) Alert.Dispose(); if (Idle != null) Idle.Dispose(); Idle = Alert = null; } }
+        public static Look BuildLook(BeaconDef def)
+        {
+            var lk = new Look { Def = def };
+            if (def.Layered) { lk.Idle = BeaconConfig.Compose(def, false); lk.Alert = BeaconConfig.Compose(def, true); }
+            if (lk.Idle == null) lk.Idle = BeaconConfig.LoadArt(def.Art, def.ArtDir) ?? BeaconConfig.LoadArt("beacon.png");
+            if (lk.Alert == null) lk.Alert = BeaconConfig.LoadArt(def.AlertArt, def.ArtDir) ?? lk.Idle;
+            int w = lk.Idle.Width, h = lk.Idle.Height;
+            using (var pi = PadArt(lk.Idle)) using (var pa = PadArt(lk.Alert))
+                lk.Hit = HitPad.Build(new[] { pi, pa }, HitPad.Margin, Pad + w / 2f, Pad + h * 0.42f, HitPad.TiltDeg);   // 1.2.4: solid silhouette, any tilt, + margin
+            return lk;
+        }
+
+        // 1.2.7: Skin > Theme: wear a new look in place. Position (the art's top-left stays put), unread messages, the
+        // attention call, history, an open bubble and the tab all stay; only the art, colours, sounds and animations change.
+        public void ApplyLook(Look lk)
+        {
+            var oldIdle = idle; var oldAlert = alertArt; var oldLayers = layersP;
+            Def = lk.Def; idle = lk.Idle; alertArt = lk.Alert; hitPad = lk.Hit;
+            int ncw = idle.Width + 2 * Pad, nch = idle.Height + 2 * Pad;
+            aw = idle.Width; ah = idle.Height;
+            if (ncw != cw || nch != ch) { FreeSurface(); cw = ncw; ch = nch; }
+            if (idleP != null) { idleP.Dispose(); idleP = null; } if (alertP != null) { alertP.Dispose(); alertP = null; }
+            for (int i = 0; i < alertCache.Length; i++) if (alertCache[i] != null) { alertCache[i].Dispose(); alertCache[i] = null; }
+            fastSrc.Clear();
+            foreach (var l in splitCache.Values) foreach (var kv in l) if (kv.Key.Length == 0) kv.Value.Dispose();
+            splitCache.Clear(); layersP = null;
+            if (oldLayers != null) foreach (var kv in oldLayers) kv.Value.Dispose();
+            if (oldAlert != null && oldAlert != oldIdle) oldAlert.Dispose(); if (oldIdle != null) oldIdle.Dispose();
+            content = Rectangle.Empty; play = null; nextIdle = -1; nextTwitch = -1; lastIdleIdx = -1;
+            lastSway = 999; lastPulse = -1; lastX = int.MinValue;
+            Text = Def.Name;
+            if (menu != null && !menu.IsDisposed && !menu.Visible) { menu.Dispose(); menu = null; }   // names in it may have changed
+            if (!dragging && !flinging) { ClampHome(); }
+            if (Size.Width != cw || Size.Height != ch) try { Size = new Size(cw, ch); } catch { }
+            if (IsHandleCreated && Visible) try { Render(0, 0); } catch (Exception ex) { Log.Write(Def.Id + ": redraw after the theme change failed: " + ex.Message); }
+            if (bubble != null && !bubble.IsDisposed && bubble.Visible) try { bubble.Refresh2(); PlaceBubble(); } catch { }
+        }
+        public string LookTag { get { return Def.ArtDir.Length > 0 ? (Def.Look.Length > 0 ? "look:" + Def.Look : "skin") : "built-in"; } }   // harness / status
+        public Size ArtSize { get { return new Size(aw, ah); } }
+
+        void FreeSurface()
+        {
+            if (fg != null) { fg.Dispose(); fg = null; }
+            if (frame != null) { frame.Dispose(); frame = null; }
+            if (memDC != IntPtr.Zero) { try { Native.SelectObject(memDC, oldObj); Native.DeleteObject(dib); Native.DeleteDC(memDC); } catch { } memDC = IntPtr.Zero; }
+            fastBuf = null;
         }
 
         // dev hook: capture exactly this beacon's on-screen pixels (and its bubble) plus the current sprite alpha
@@ -291,6 +339,10 @@ namespace BotBeacons
             bubble.Place(Skin.IsTab(this) && !bubbleAnchor.IsEmpty ? bubbleAnchor : ArtRect);
         }
         public Rectangle TabAnchor;   // set by the Tabs skin just before OpenBubble
+        // 1.2.7: a handoff spark landed here: one soft pulse (floating beacon); the centre of the art on screen
+        double handoffAt = -10;
+        public void HandoffPulse() { handoffAt = clock.Elapsed.TotalSeconds; if (Visible) timer.Interval = 40; }
+        public Point ArtCenter { get { var r = ArtRect; return new Point(r.X + r.Width / 2, r.Y + (int)(r.Height * 0.42f)); } }
         Rectangle bubbleAnchor;
 
         // ------------------------------------------------------------ animation
@@ -423,6 +475,9 @@ namespace BotBeacons
                 shakeY -= (float)(Math.Sin(Math.PI * wt / 0.7) * wiggleAmp * 0.5);
             }
             if (play != null) { sway += play.Tilt(t); hop += play.Hop(t); }
+            // 1.2.7: a handoff spark arriving: one soft pulse
+            double ht = t - handoffAt;
+            if (ht >= 0 && ht < 0.7) pulse = Math.Max(pulse, (float)(0.6 * Math.Sin(Math.PI * ht / 0.7)));
 
             // v0.10 sub-pixel motion: the window sits on the whole pixel and the sprite is drawn at the fractional rest
             // (bilinear), so a slow bob glides instead of stepping 1 px every few frames. Legacy clock: whole pixels.
@@ -452,7 +507,7 @@ namespace BotBeacons
             if (OnAnyScreen()) Render(sway, pulse, aura, t, fracX, fracY);
             // dev hook "frametimes": how far the drawn position (whole pixel + drawn fraction) is from the exact one
             if (!dragging && !float.IsNaN(ex)) FrameClock.ReportPos(Math.Sqrt(Math.Pow(x + lastFX - ex, 2) + Math.Pow(y + lastFY - ey, 2)));
-            bool busy = !off || alert || dragging || flinging || play != null || wt < 0.8 || dumpLeft > 0 || ramp < 1 || motionU < 1;
+            bool busy = !off || alert || dragging || flinging || play != null || wt < 0.8 || dumpLeft > 0 || ramp < 1 || motionU < 1 || ht < 0.8;
             int iv = busy ? 40 : 250; if (timer.Interval != iv) timer.Interval = iv;
         }
 
@@ -650,7 +705,7 @@ namespace BotBeacons
 
         void EnsureSurface()
         {
-            if (frame != null) return;
+            if (frame != null) { if (idleP == null) { idleP = ToPArgb(idle); alertP = ToPArgb(alertArt); } return; }   // 1.2.7: a same-size theme change keeps the surface but drops the sprites
             idleP = ToPArgb(idle); alertP = ToPArgb(alertArt);
             var bi = new Native.BITMAPINFOHEADER { biSize = 40, biWidth = cw, biHeight = -ch, biPlanes = 1, biBitCount = 32 };
             IntPtr bits;

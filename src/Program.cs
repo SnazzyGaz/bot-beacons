@@ -12,7 +12,7 @@ namespace BotBeacons
 {
     static class Program
     {
-        public const string Version = "1.2.6";
+        public const string Version = "1.2.7";
         public static readonly List<BeaconForm> Beacons = new List<BeaconForm>();
         static Relay relay;
         static NotifyIcon tray;
@@ -66,12 +66,11 @@ namespace BotBeacons
                 };
                 Wake.Load();
                 try { var cf = Path.Combine(Settings.Dir, "control.txt"); if (File.Exists(cf) && File.GetLastWriteTimeUtc(cf) < DateTime.UtcNow.AddSeconds(-10)) { File.Delete(cf); Log.Write("Ignored a stale control command from before start-up."); } } catch { }
-                var defs = BeaconConfig.Load();
                 // 1.2.0: tabs added for bots (1.2.5: a new bot answered Add; before: "+ Add tab") are beacons too; tab name overrides apply everywhere
-                foreach (var u in TabStore.Added) if (!defs.Exists(d => string.Equals(d.Id, u.Id, StringComparison.OrdinalIgnoreCase))) defs.Add(TabStore.DefFor(u));
-                foreach (var d in defs) TabStore.ApplyName(d);
+                // 1.2.7: dressed in the chosen skin (Skin > Theme), if any
+                string skinError; var defs = BeaconConfig.LoadAll(Skins.Active, out skinError);
                 AutoStart.Sync();
-                Log.Write("Started Bot Beacons v" + Version + (LaunchedAtStartup ? " (at Windows sign-in)" : "") + " with " + defs.Count + " beacon(s), bubble style " + Theme.BubbleStyle() + ", animations " + AnimSettings.Name(AnimSettings.Mode) + ", skin " + Skin.Name + ". Secure link: " + (Settings.Link.Valid ? "paired with " + Settings.Link.Peer : "not paired"));
+                Log.Write("Started Bot Beacons v" + Version + (LaunchedAtStartup ? " (at Windows sign-in)" : "") + " with " + defs.Count + " beacon(s), bubble style " + Theme.BubbleStyle() + ", animations " + AnimSettings.Name(AnimSettings.Mode) + ", skin " + Skin.Name + ", theme " + (BeaconConfig.SkinDir.Length > 0 ? Skins.Active : "built-in") + ". Secure link: " + (Settings.Link.Valid ? "paired with " + Settings.Link.Peer : "not paired"));
 
                 for (int i = 0; i < defs.Count; i++) Beacons.Add(new BeaconForm(defs[i], i, defs.Count));
                 foreach (var kv in AttentionStore.Load()) { var sa = Find(kv.Key); if (sa != null) sa.RestoreAttention(kv.Value); else AttentionStore.Set(kv.Key, null); }
@@ -86,7 +85,8 @@ namespace BotBeacons
                 tray.ContextMenuStrip = BuildMenu(null);
                 tray.Visible = true;
                 TrayBadge.Init(tray, tray.Icon);
-                tray.BalloonTipClicked += (s, e) => { if (balloonKind == "wake") OpenWakeForm(); else if (Updater.Available != null) Updater.UpdateNow(); };   // 1.2.3 (1.2.6: the wake hook balloon opens its dialog)
+                Skins.Started(skinError);
+                tray.BalloonTipClicked += (s, e) => { if (balloonKind == "wake") OpenWakeForm(); else if (balloonKind == "skin") Skins.OpenFolder(); else if (balloonKind == "update" && Updater.Available != null) Updater.UpdateNow(); };   // 1.2.7: a skin balloon opens the skins folder   // 1.2.3 (1.2.6: the wake hook balloon opens its dialog)
                 // left click: open the first visible beacon with news (or show a hidden one that has some); double-click:
                 // pause/resume all beacons. The single click waits out the double-click time so a double-click doesn't also open a bubble.
                 var clickWait = new System.Windows.Forms.Timer { Interval = Math.Max(200, SystemInformation.DoubleClickTime) };
@@ -99,6 +99,7 @@ namespace BotBeacons
                 relay.MessageArrived += m => main.BeginInvoke((Action)(() => Route(m)));
                 // 1.2.6: a profile picture arrived / a bot set the tab-pictures preference (both raised on the relay thread)
                 Avatars.Saved += id => { try { main.BeginInvoke((Action)(() => TabPictures.AvatarArrived(id))); } catch { } };
+                Relay.HandoffArrived += (f, t, l) => { try { main.BeginInvoke((Action)(() => Sparks.Handoff(f, t, l))); } catch { } };   // 1.2.7: a spark only, nothing sent back
                 Relay.PrefsArrived += d => { try { main.BeginInvoke((Action)(() => { string v; if (d.TryGetValue("tabPictures", out v)) TabPictures.Choose(v, "set by a bot"); })); } catch { } };
                 TabPictures.Changed += () => TabsSkin.Changed();
                 // a second launch: just note it (no window, no focus change)
@@ -113,6 +114,7 @@ namespace BotBeacons
                     Visibility.Apply();
                     if (Visibility.HiddenList.Length > 0 || Visibility.Paused) Log.Write("Hidden beacons: " + (Visibility.Paused ? "all (beacons paused)" : Visibility.HiddenList) + ".");
                     relay.Start();
+                    Skins.Watch(main); Skins.ShowPending();   // 1.2.7: new skins (and zips) in skins\ show up live
                     Updater.Cleanup(); Updater.Start(main);   // 1.2.3: update checks (Updates > Notify / Off)
                     // never pop the pairing window at sign-in (it would take focus); the tray menu has Pair with bots
                     if (!Settings.Link.Valid && !Settings.DevHooks && !LaunchedAtStartup) StartPairing();
@@ -126,6 +128,21 @@ namespace BotBeacons
                 Application.ApplicationExit += (s, e) => { relay.Stop(); tray.Visible = false; tray.Dispose(); Settings.Save(); Log.Write("Exited."); };
                 Application.Run(main);
             }
+        }
+
+        // 1.2.7: after Skin > Theme changed the beacons' looks: the tray icon, menus (names may differ) and tabs follow
+        public static void ThemeChanged()
+        {
+            if (tray != null)
+            {
+                Icon ic = BeaconConfig.TrayIcon();
+                if (ic == null) try { ic = Icon.ExtractAssociatedIcon(Application.ExecutablePath); } catch { ic = SystemIcons.Application; }
+                TrayBadge.Rebase(ic);
+                var tm = tray.ContextMenuStrip;
+                if (tm != null && !tm.Visible) { tray.ContextMenuStrip = BuildMenu(null); tm.Dispose(); }
+            }
+            TabsSkin.Changed();
+            TrayBadge.Update();
         }
 
         // 1.2.3: a tray balloon (updates; 1.2.6: also the one-time wake hook note). kind decides what a click on it does.
@@ -314,13 +331,19 @@ namespace BotBeacons
                 }
             };
             skin.DropDownItems.Add(new ToolStripSeparator()); skin.DropDownItems.Add(anim);
+            // 1.2.7: the spark that flies between two beacons when one bot hands work to another (beaconctl handoff)
+            var sparks = new ToolStripMenuItem("Handoff sparks", null, (s, e) => Sparks.SetOn(!Sparks.On)) { ToolTipText = "A small spark flies from one beacon to another when a bot hands work to another bot" };
+            skin.DropDownItems.Add(sparks);
             skin.DropDownOpening += (s, e) =>
             {
                 var n = Skin.Name; skB.Checked = n == "floating"; skT.Checked = n == "tabs"; skM.Checked = skM.Visible = n == "mixed";
                 if (asTab != null) asTab.Text = Skin.IsTab(from) ? "Make " + from.Def.Name + " float" : "Make " + from.Def.Name + " a tab";
                 string cur = Theme.BubbleStyle(); foreach (var it in styles) it.Checked = (string)it.Tag == cur;
+                sparks.Checked = Sparks.On;
             };
             m.Items.Add(skin);
+            // 1.2.7: Skin > Theme: Built-in or an installed skin, live
+            skin.DropDownItems.Insert(3, Skins.ThemeMenu(from)); skin.DropDownItems.Insert(3, new ToolStripSeparator());
 
             // ---- Layout ▸ tabs and docking
             var layout = new ToolStripMenuItem("Layout");
@@ -572,12 +595,16 @@ namespace BotBeacons
                 else if (cmd == "reply" && sk != null && parts.Length == 3) sk.SendReplyText(parts[2]);
                 else if (cmd == "ping" && sk != null) sk.PingClick();
                 else if (cmd == "click" && sk != null) sk.SimulateClick();
+                else if (cmd == "spark" && parts.Length == 3) { var sp = parts[2].Split(new[] { ' ' }, 2); Sparks.Handoff(parts[1], sp[0], sp.Length > 1 ? sp[1] : ""); }   // 1.2.7: spark <from> <to> [label]
                 else if (cmd == "attention" && parts.Length == 3) Route(new PetMessage { Id = "local", Bot = parts[1], Kind = "attention", Text = parts[2] });
                 else if (cmd == "openapp" && sk != null) sk.OpenInApp(sk.AttentionMsg);
                 else if (cmd == "type" && sk != null && parts.Length == 3) { var b = sk.OpenBubbleForm; if (b != null) b.DevType(parts[2]); else Log.Write("type: " + sk.Def.Id + " has no open bubble."); }
                 else if (cmd == "key" && sk != null && parts.Length == 3) { var b = sk.OpenBubbleForm; if (b != null) b.DevKey(parts[2].Trim().ToLowerInvariant()); else Log.Write("key: " + sk.Def.Id + " has no open bubble."); }
                 else if (cmd == "dismiss" && sk != null) { var b = sk.OpenBubbleForm; if (b != null) b.DevKey("dismiss"); else sk.DismissFromBubble(); }
                 else if (cmd == "bubble" && parts.Length > 1) Theme.SetBubbleStyle(parts[1]);
+                else if (cmd == "theme" && parts.Length > 1) { var tf = raw.Substring(6).Trim(); Skins.Switch(tf == "builtin" ? "" : tf, "dev hook"); }   // 1.2.7: theme <folder>|builtin
+                else if (cmd == "themelook" && sk != null && parts.Length == 3) Skins.Pick(sk.Def.Id, parts[2].Trim() == "auto" ? "" : parts[2].Trim() == "builtin" ? "-" : parts[2].Trim());   // 1.2.7: themelook <id> <look>|auto|builtin
+                else if (cmd == "skinscan") Skins.Scan();
                 else if (cmd == "fps" && parts.Length > 1) FrameClock.SetFps(parts[1]);
                 else if (cmd == "tune") { var tv = raw.Split(' '); if (tv.Length >= 4) FrameClock.Tune(tv[1], tv[2], tv[3]); }
                 else if (cmd == "clock" && parts.Length > 1) FrameClock.SetLegacy(parts[1] == "legacy");
@@ -633,7 +660,7 @@ namespace BotBeacons
                 }
                 else if (cmd == "status")
                 {
-                    var lines = new List<string> { "bubbleStyle=" + Theme.BubbleStyle(), "anim=" + AnimSettings.Name(AnimSettings.Mode), "frameClock=" + FrameClock.Backend + " fps=" + FrameClock.FpsSetting + " effective=" + FrameClock.EffectiveFps + " display=" + FrameClock.RefreshHz.ToString("0.#") + "Hz missed=" + FrameClock.Missed, "locked=" + SessionLocked, "relay=" + relay.State, "relayLastOk=" + (relay.LastOk == DateTime.MinValue ? "never" : relay.LastOk.ToString("HH:mm:ss")), "tray=" + (tray != null ? tray.Text : ""), "trayBadge=" + TrayBadge.State, "hidden=" + Visibility.HiddenList, "paused=" + Visibility.Paused, "startup=" + LaunchedAtStartup, "autostart=" + AutoStart.IsOn + " wanted=" + AutoStart.Wanted, "grokApp=" + (System.Diagnostics.Process.GetProcessesByName("Grok Bot").Length > 0 ? "running" : "not running"), "protocol=" + AppLink.ProtocolTarget(), "paired=" + Settings.Link.Valid, "peer=" + Settings.Link.Peer, "rejected=" + relay.Rejected, Wake.StatusLine(), "soundSet=" + Sound.Set, TabsSkin.Status(), "updates=" + (Updater.Notify ? "notify" : "off") + " available=" + (Updater.Available != null ? Updater.Available.Tag : "none") + " status=" + Updater.Status };
+                    var lines = new List<string> { "bubbleStyle=" + Theme.BubbleStyle(), "anim=" + AnimSettings.Name(AnimSettings.Mode), "frameClock=" + FrameClock.Backend + " fps=" + FrameClock.FpsSetting + " effective=" + FrameClock.EffectiveFps + " display=" + FrameClock.RefreshHz.ToString("0.#") + "Hz missed=" + FrameClock.Missed, "locked=" + SessionLocked, "relay=" + relay.State, "relayLastOk=" + (relay.LastOk == DateTime.MinValue ? "never" : relay.LastOk.ToString("HH:mm:ss")), "tray=" + (tray != null ? tray.Text : ""), "trayBadge=" + TrayBadge.State, "hidden=" + Visibility.HiddenList, "paused=" + Visibility.Paused, "startup=" + LaunchedAtStartup, "autostart=" + AutoStart.IsOn + " wanted=" + AutoStart.Wanted, "grokApp=" + (System.Diagnostics.Process.GetProcessesByName("Grok Bot").Length > 0 ? "running" : "not running"), "protocol=" + AppLink.ProtocolTarget(), "paired=" + Settings.Link.Valid, "peer=" + Settings.Link.Peer, "rejected=" + relay.Rejected, Wake.StatusLine(), "soundSet=" + Sound.Set, TabsSkin.Status(), Skins.Status(), "updates=" + (Updater.Notify ? "notify" : "off") + " available=" + (Updater.Available != null ? Updater.Available.Tag : "none") + " status=" + Updater.Status };
                     foreach (var s in Beacons) lines.Add("beacon " + s.Def.Id + " unread=" + s.Unread.Count + " attention=" + s.Attention + " visible=" + s.Visible + " history=" + s.History.Count + " at=" + s.Bounds.X + "," + s.Bounds.Y + "," + s.Bounds.Width + "," + s.Bounds.Height + " drawn=" + s.DrawnPos + " bubble=" + s.BubbleBounds + " idle=" + s.IdleCount + " twitch=" + s.TwitchCount + " fling=" + s.FlingCount + " playing=" + s.Playing + " interval=" + s.TimerInterval);
                     File.WriteAllLines(Path.Combine(Settings.Dir, "status.txt"), lines.ToArray());
                 }

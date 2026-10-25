@@ -1,0 +1,39 @@
+// Mono check of the pure 1.2.7 handoff-spark rules (offline: no relay, no settings, no window).
+// Build and run on Linux (needs mono-mcs/mono-devel):
+//   d=$(mktemp -d); cp src/*.cs $d/; cp tools/MonoCngStub.cs.txt $d/CngStub.cs; cp tools/SparkHarness.cs.txt $d/SparkHarness.cs
+//   mcs -langversion:5 -main:BotBeacons.SparkHarness -out:$d/h.exe -r:System.Windows.Forms.dll -r:System.Drawing.dll \
+//       -r:System.Web.Extensions.dll -r:System.Security.dll -r:System.Core.dll $d/*.cs
+//   mono $d/h.exe
+using System;
+using System.Collections.Generic;
+
+namespace BotBeacons
+{
+    static class SparkHarness
+    {
+        static int fails;
+        static void Check(bool ok, string what) { if (!ok) { fails++; Console.WriteLine("FAIL: " + what); } else Console.WriteLine("ok   " + what); }
+
+        static int Main(string[] args)
+        {
+            // rate limits and the arc (pure parts of Spark.cs)
+            var last = new Dictionary<string, double>(StringComparer.OrdinalIgnoreCase);
+            Check(Sparks.Gate(last, 0, "a", "b", 10) == null, "spark: first one allowed");
+            last["a>b"] = 10;
+            Check(Sparks.Gate(last, 1, "a", "b", 12) != null && Sparks.Gate(last, 1, "a", "b", 14.1) == null, "spark: same pair waits 4 s");
+            Check(Sparks.Gate(last, 1, "b", "a", 11) == null && Sparks.Gate(last, 1, "a", "c", 11) == null, "spark: other pairs not held up");
+            Check(Sparks.Gate(last, 3, "x", "y", 11) != null, "spark: at most 3 on screen");
+            var pa = new System.Drawing.PointF(100, 800); var pb = new System.Drawing.PointF(2900, 760);   // across two monitors
+            var cp = Sparks.Control(pa, pb); var mid = Sparks.At(pa, cp, pb, 0.5f);
+            Check(cp.Y < Math.Min(pa.Y, pb.Y) && mid.Y < Math.Min(pa.Y, pb.Y) && Math.Abs((mid.Y - (pa.Y + pb.Y) / 2)) <= 161, "spark: gentle upward arc (" + (int)(((pa.Y + pb.Y) / 2) - mid.Y) + " px)");
+            var cv = Sparks.Control(new System.Drawing.PointF(500, 100), new System.Drawing.PointF(500, 900));
+            Check(!float.IsNaN(cv.X) && Math.Abs(cv.X - 500) <= 160.5, "spark: vertical path bows sideways");
+            Check(Math.Abs(Sparks.Duration(pa, pa) - 0.8) < 1e-9 && Sparks.Duration(new System.Drawing.PointF(0, 0), new System.Drawing.PointF(9000, 0)) <= 1.2 + 1e-9, "spark: 0.8 to 1.2 s");
+            Check(Sparks.Ease(0) == 0 && Math.Abs(Sparks.Ease(1) - 1) < 1e-6 && Math.Abs(Sparks.Ease(0.5f) - 0.5f) < 1e-6 && Sparks.Ease(0.1f) < 0.1f, "spark: eases in and out");
+            var e0 = Sparks.At(pa, cp, pb, 0); var e1 = Sparks.At(pa, cp, pb, 1);
+            Check(Math.Abs(e0.X - pa.X) < 0.01 && Math.Abs(e1.X - pb.X) < 0.01 && Math.Abs(e1.Y - pb.Y) < 0.01, "spark: starts at the sender, lands on the receiver");
+            Console.WriteLine(fails == 0 ? "SPARKS OK" : fails + " FAILED");
+            return fails == 0 ? 0 : 1;
+        }
+    }
+}

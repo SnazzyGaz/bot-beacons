@@ -86,6 +86,7 @@ namespace BotBeacons
             if (System.IO.File.Exists(Avatars.PathFor(id)) && TabPictures.Setting != "beacon") { TabStore.Get(id).Image = "profile"; TabStore.Save(); }   // the bot's own picture
             var b = Program.AddBeacon(TabStore.DefFor(u));
             Log.Write("New bot '" + id + "': tab added (" + q.Count + " message(s)).");
+            if (Skins.Active.Length > 0) Skins.Switch(Skins.Active, "new bot " + id);   // 1.2.7: the new bot gets a look from the skin
             foreach (var m in q) b.Notify(m);
             return b;
         }

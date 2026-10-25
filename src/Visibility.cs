@@ -139,6 +139,18 @@ namespace BotBeacons
             }
         }
 
+        // 1.2.7: a theme change brought another tray icon: new badge variants, shown at once (the old ones are kept, not
+        // disposed, since the tray may still be drawing one)
+        public static void Rebase(Icon baseIcon)
+        {
+            if (Tray == null || baseIcon == null) return;
+            plain = baseIcon;
+            dot = Make(baseIcon, Color.FromArgb(255, 176, 32), false);
+            attOn = Make(baseIcon, Color.FromArgb(235, 36, 30), true);
+            attOff = Make(baseIcon, Color.FromArgb(120, 20, 18), true);
+            lastIcon = null; Update();
+        }
+
         static void Set(Icon i) { if (Tray != null && i != null && !ReferenceEquals(i, lastIcon)) { Tray.Icon = i; lastIcon = i; } }
 
         // dev hook: save the badge variants (the app's own icons, not the screen)

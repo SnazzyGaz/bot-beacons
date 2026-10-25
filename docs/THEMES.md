@@ -2,6 +2,8 @@
 
 A theme is a `beacons.json` file plus some PNG art. The app reads `%APPDATA%\BotBeacons\beacons.json`. It is created from the built-in starter pack on first run, and a setup bot usually writes a personal one with `tools/make_beacons.py`. Edit it, then right-click a beacon → **Exit** and start Bot Beacons again.
 
+**Skins (1.2.7+).** To ship a whole set of characters that the user can switch to live (right-click → Skin → **Theme**), make a skin instead: a folder or zip dropped in `%APPDATA%\BotBeacons\skins\`. See [SKINS.md](SKINS.md). Skins use the same entry keys as below.
+
 ## Make a custom beacon (walkthrough)
 
 1. **Start from a starter look.** On the box, `python3 tools/make_beacons.py --beacon "id=chef; name=Chef Bot; look=cat; color=#FF7A59; agent=<agent id>"` writes a full entry you can edit. Or copy an existing entry in `%APPDATA%\BotBeacons\beacons.json` and give it a new `id`.

@@ -121,7 +121,26 @@ Exit 0 = applied. Exit 2 = the app is older than 1.2.6: ask the user to update, 
 - Use only your own beacon id, as with `send`.
 - Animated GIFs work only as the user's own custom image (pencil → **Custom image**); `avatar` sends a still PNG.
 
-## 5. Never print keys or topics
+## 5. Handoff sparks: show the user when you hand work to another bot (app 1.2.7+)
+
+When you pass work to another of the user's bots that has a beacon (you message it, delegate a task to it or wake it), you can show it on the desktop: a small spark in your beacon's colour flies from your beacon or tab to theirs, with an optional short label, and their beacon gives a little pulse.
+
+```
+beaconctl.py handoff <your-beacon-id> <their-beacon-id> ["short label"]
+```
+
+- **It's purely visual.** No bubble, badge, glow or sound, and nothing comes back: the app never replies to it and it never wakes the router or any bot. It doesn't deliver anything to the other bot. Send your real message to it the usual way.
+- **Call it once per handoff, after you've actually handed the work over.** Not for every message, and never for a status update. The label is optional, up to 40 characters ("research notes", "build log"). It's shown on the user's screen, so keep it short and free of private details.
+- **Exit 0 means fine, whether or not a spark was shown.** It prints `handoff skipped: ... nothing sent` when the PC app is older than 1.2.7 (older apps would show it as an empty message, so it's never sent to them) or didn't answer a quick, silent version check. Don't retry and don't tell the user. Exit 1 is a mistake in the command (an id with spaces, the same id twice).
+- `--dry-run` prints the message and its size without sending anything (no pairing needed). `--force` skips the version check. Use it only if the user asks.
+- **The app also skips it** when the user turned sparks off (right-click → Skin → **Handoff sparks**, on by default), when Animations are Off, when either beacon is hidden or doesn't exist on the PC, or the screen is locked. The same pair sparks at most once every 4 seconds, and at most 3 are on screen at once. Nothing on your side changes.
+- Use your own beacon id as FROM, as with `send`.
+
+## 6. Making a skin for the user (app 1.2.7+)
+
+If the user asks for a new look ("make me a skin of X"), follow the recipe in [SKINS.md](SKINS.md): draw the art, write `skin.json`, run `beaconctl.py skin check` and `skin pack`, copy the zip to `%APPDATA%\BotBeacons\skins\` with the user's approval, and tell them to pick it from right-click → Skin → **Theme**. Say in `credits` if the art is AI-generated. Never overwrite their `beacons.json` for this.
+
+## 7. Never print keys or topics
 
 - The pairing link, keys and relay topics are in `secrets/` next to `beaconctl.py`. Never open, print, copy or quote anything from there in chat, logs or files the user sees. The same goes for the wake hook's URL and sender key.
 - `beaconctl.py` never prints secrets. Don't add debug output that would.

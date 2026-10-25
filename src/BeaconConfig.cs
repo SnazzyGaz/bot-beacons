@@ -30,6 +30,9 @@ namespace BotBeacons
         public float GlowOver = -1, GlowOverAlpha = 100, EyeCore = 5;
         public bool Layered { get { return Base.Length > 0; } }
         public AnimSpec Anim = new AnimSpec();   // idle actions + twitches ("anim" in beacons.json, over the top-level defaults)
+        // 1.2.7: dressed by a skin (Skin > Theme): its art is looked up in this skin folder first; Look = the skin's look id
+        // for a beacon the skin dressed from its generic "looks" ("" = matched by id, or not dressed)
+        public string ArtDir = "", Look = "";
     }
 
     // %APPDATA%\BotBeacons\beacons.json (created from the built-in default on first run).
@@ -49,8 +52,20 @@ namespace BotBeacons
 
         static Dictionary<string, object> Parse(string text) { return new JavaScriptSerializer().DeserializeObject(text) as Dictionary<string, object>; }
 
-        public static List<BeaconDef> Load() { return Load(true); }
-        static List<BeaconDef> Load(bool useOverride)
+        public static List<BeaconDef> Load() { string e; return Load(Skins.Active, out e); }
+        // 1.2.7: theme = the skin folder to dress the beacons in ("" = built-in). skinError = why it couldn't be used (the
+        // list is then the built-in look); the beacons themselves always come from beacons.json (+ beacons.user.json).
+        public static string SkinDir = "";   // the skin the loaded list is dressed in ("" = built-in)
+        public static List<BeaconDef> Load(string theme, out string skinError) { skinError = null; return Load(true, theme ?? "", ref skinError); }
+        // the full list the app shows: beacons.json, then the tabs added for new bots, with tab name edits applied
+        public static List<BeaconDef> LoadAll(string theme, out string skinError)
+        {
+            var defs = Load(theme, out skinError);
+            foreach (var u in TabStore.Added) if (!defs.Exists(d => string.Equals(d.Id, u.Id, StringComparison.OrdinalIgnoreCase))) defs.Add(TabStore.DefFor(u));
+            foreach (var d in defs) TabStore.ApplyName(d, true);
+            return defs;
+        }
+        static List<BeaconDef> Load(bool useOverride, string theme, ref string skinError)
         {
             string text = null;
             try { if (File.Exists(FilePath)) text = File.ReadAllText(FilePath); } catch { }
@@ -96,6 +111,13 @@ namespace BotBeacons
             try
             {
                 var root = Parse(text);
+                SkinDir = "";
+                if (useOverride && theme.Length > 0)
+                {
+                    // 1.2.7: the skin's art and animations go over beacons.json; beacons.user.json and tabs.json still win
+                    try { var notes = new List<string>(); root = Skins.DressFromSettings(root, theme, notes); SkinDir = Skins.PathOf(theme); Log.Write("Theme '" + theme + "': " + string.Join("; ", notes.ToArray()) + "."); }
+                    catch (Exception ex) { skinError = ex.Message; Log.Write("Theme '" + theme + "' could not be used (" + ex.Message + "); the built-in look is used."); }
+                }
                 if (useOverride && File.Exists(OverridePath))
                     try { root = ThemeMerge.Overlay(root, Parse(File.ReadAllText(OverridePath))); Log.Write("beacons.user.json applied over beacons.json."); }
                     catch (Exception ex) { Log.Write("beacons.user.json could not be read (" + ex.Message + "); ignored."); }
@@ -115,6 +137,7 @@ namespace BotBeacons
                     if (o.TryGetValue("eyeGlow", out rv)) d.EyeGlow = Convert.ToSingle(rv); if (o.TryGetValue("lampGlow", out rv)) d.LampGlow = Convert.ToSingle(rv);
                     if (o.TryGetValue("glowOver", out rv)) d.GlowOver = Convert.ToSingle(rv); if (o.TryGetValue("glowOverAlpha", out rv)) d.GlowOverAlpha = Math.Max(0, Math.Min(255, Convert.ToSingle(rv))); if (o.TryGetValue("eyeCore", out rv)) d.EyeCore = Convert.ToSingle(rv);
                     d.Test = Crypto.Str(o, "test").ToLowerInvariant() == "true";
+                    d.ArtDir = Crypto.Str(o, "skinDir"); d.Look = Crypto.Str(o, "skinLook");
                     if (d.Id.Length == 0 || (d.Art.Length == 0 && d.Base.Length == 0)) continue;
                     if (d.Name.Length == 0) d.Name = d.Id;
                     try { d.Color = ColorTranslator.FromHtml(Crypto.Str(o, "color")); } catch { }
@@ -126,8 +149,8 @@ namespace BotBeacons
                 }
             }
             catch (Exception ex) { Log.Write("beacons.json could not be read: " + ex.Message); }
-            if (list.Count == 0 && useOverride && File.Exists(OverridePath)) { Log.Write("No valid beacons with beacons.user.json; loading without it."); return Load(false); }
-            if (list.Count == 0) { Log.Write("No valid beacons in beacons.json; using the built-in default."); File.Delete(FilePath); return Load(false); }
+            if (list.Count == 0 && useOverride && (File.Exists(OverridePath) || theme.Length > 0)) { Log.Write("No valid beacons with beacons.user.json" + (theme.Length > 0 ? " and the theme" : "") + "; loading without them."); if (theme.Length > 0 && skinError == null) skinError = "no valid beacons with it"; return Load(false, "", ref skinError); }
+            if (list.Count == 0) { Log.Write("No valid beacons in beacons.json; using the built-in default."); File.Delete(FilePath); return Load(false, "", ref skinError); }
             return list;
         }
 
@@ -164,10 +187,12 @@ namespace BotBeacons
         {
             string name = RootStr("trayIcon");
             if (name.Length == 0) return null;
-            if (name.IndexOfAny(Path.GetInvalidFileNameChars()) >= 0) { Log.Write("trayIcon: '" + name + "' is not a plain file name; using the app icon."); return null; }
+            string inSkin = SkinDir.Length > 0 ? Skins.Resolve(SkinDir, name) : null;   // 1.2.7: a skin's own tray icon
+            if (inSkin == null && name.IndexOfAny(Path.GetInvalidFileNameChars()) >= 0) { Log.Write("trayIcon: '" + name + "' is not a plain file name; using the app icon."); return null; }
             try
             {
-                byte[] data = null;
+                byte[] data = inSkin != null ? File.ReadAllBytes(inSkin) : null;
+                if (data == null)
                 foreach (var dir in new[] { Path.Combine(Settings.Dir, "art"), Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "art") })
                 {
                     string p = Path.Combine(dir, name);
@@ -231,9 +256,16 @@ namespace BotBeacons
             using (var rd = new StreamReader(st)) return rd.ReadToEnd();
         }
 
-        public static Bitmap LoadArt(string name)
+        public static Bitmap LoadArt(string name) { return LoadArt(name, null); }
+        // 1.2.7: skinDir = a skin folder looked in first (its file name may be "art/x.png" or just "x.png")
+        public static Bitmap LoadArt(string name, string skinDir)
         {
             if (string.IsNullOrEmpty(name)) return null;
+            if (!string.IsNullOrEmpty(skinDir))
+            {
+                string sp = Skins.Resolve(skinDir, name);
+                if (sp != null) using (var b = new Bitmap(sp)) return new Bitmap(b);
+            }
             foreach (var dir in new[] { Path.Combine(Settings.Dir, "art"), Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "art") })
             {
                 string p = Path.Combine(dir, name);
@@ -252,7 +284,7 @@ namespace BotBeacons
         // The alert frame adds a soft glow behind and over the lens/lamp plus a white core.
         public static Bitmap Compose(BeaconDef d, bool alert)
         {
-            var b = LoadArt(d.Base); if (b == null) return null;
+            var b = LoadArt(d.Base, d.ArtDir); if (b == null) return null;
             Color col = d.Tint.IsEmpty ? d.Color : d.Tint;
             TintLens(b, d, col, alert);
             var o = new Bitmap(b.Width, b.Height, PixelFormat.Format32bppArgb);
@@ -261,7 +293,7 @@ namespace BotBeacons
                 g.SmoothingMode = SmoothingMode.AntiAlias; g.InterpolationMode = InterpolationMode.HighQualityBicubic;
                 if (alert) Glow(g, d, col, 200);
                 g.DrawImage(b, 0, 0, b.Width, b.Height);
-                foreach (var name in d.Overlays) { var ov = LoadArt(name); if (ov == null) { Log.Write(d.Id + ": overlay " + name + " not found."); continue; } g.DrawImage(ov, 0, 0, b.Width, b.Height); ov.Dispose(); }
+                foreach (var name in d.Overlays) { var ov = LoadArt(name, d.ArtDir); if (ov == null) { Log.Write(d.Id + ": overlay " + name + " not found."); continue; } g.DrawImage(ov, 0, 0, b.Width, b.Height); ov.Dispose(); }
                 if (alert)
                 {
                     float eo = d.GlowOver < 0 ? (d.EyeGlow > 0 ? d.EyeGlow : d.EyeR * 2.6f) : d.GlowOver;
@@ -278,10 +310,10 @@ namespace BotBeacons
         public static List<KeyValuePair<string, Bitmap>> IdleLayers(BeaconDef d)
         {
             var list = new List<KeyValuePair<string, Bitmap>>();
-            var b = LoadArt(d.Base); if (b == null) return list;
+            var b = LoadArt(d.Base, d.ArtDir); if (b == null) return list;
             TintLens(b, d, d.Tint.IsEmpty ? d.Color : d.Tint, false);
             list.Add(new KeyValuePair<string, Bitmap>("", b));
-            foreach (var name in d.Overlays) { var ov = LoadArt(name); if (ov != null) list.Add(new KeyValuePair<string, Bitmap>(name, ov)); }
+            foreach (var name in d.Overlays) { var ov = LoadArt(name, d.ArtDir); if (ov != null) list.Add(new KeyValuePair<string, Bitmap>(name, ov)); }
             return list;
         }
 

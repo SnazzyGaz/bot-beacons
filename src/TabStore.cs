@@ -126,9 +126,11 @@ namespace BotBeacons
 
         // ---- effective values
         // the name edit is applied to the beacon itself, so bubbles and menus show it too
-        public static void ApplyName(BeaconDef d)
+        public static void ApplyName(BeaconDef d) { ApplyName(d, false); }
+        // fresh: d is a newly loaded definition (start-up, or a 1.2.7 theme change), so its name is the new original
+        public static void ApplyName(BeaconDef d, bool fresh)
         {
-            if (!origName.ContainsKey(d.Id)) origName[d.Id] = d.Name;
+            if (fresh || !origName.ContainsKey(d.Id)) origName[d.Id] = d.Name;
             string n = Has(d.Id) ? Get(d.Id).Name : "";
             d.Name = n.Length > 0 ? n : origName[d.Id];
         }
@@ -202,7 +204,7 @@ namespace BotBeacons
         public static Bitmap Sprite(BeaconDef d)
         {
             Bitmap s = null;
-            try { if (d.Layered) s = BeaconConfig.Compose(d, false); if (s == null) s = BeaconConfig.LoadArt(d.Art) ?? BeaconConfig.LoadArt("beacon.png"); } catch { s = null; }
+            try { if (d.Layered) s = BeaconConfig.Compose(d, false); if (s == null) s = BeaconConfig.LoadArt(d.Art, d.ArtDir) ?? BeaconConfig.LoadArt("beacon.png"); } catch { s = null; }
             return s;
         }
         public static Bitmap BeaconPicture(BeaconDef d)
@@ -220,7 +222,7 @@ namespace BotBeacons
             string src = ImageSource(d);
             if (src == "custom") { int fi; var fr = TabGif.Current(d.Id, out fi); if (fr != null) return fr; }   // 1.2.6: animated GIF
             string file = src == "custom" ? CustomPath(d.Id) : src == "bot" ? Avatars.PathFor(d.Id) : null;
-            string key = src + "|" + (file != null ? File.GetLastWriteTimeUtc(file).Ticks.ToString() : d.Name + "|" + d.Art + "|" + d.Base + "|" + Hex(ColorFor(d)));
+            string key = src + "|" + (file != null ? File.GetLastWriteTimeUtc(file).Ticks.ToString() : d.Name + "|" + d.ArtDir + "|" + d.Art + "|" + d.Base + "|" + string.Join(",", d.Overlays.ToArray()) + "|" + Hex(ColorFor(d)));
             KeyValuePair<string, Bitmap> hit;
             if (imgCache.TryGetValue(d.Id, out hit) && hit.Key == key) return hit.Value;
             Bitmap b = null;

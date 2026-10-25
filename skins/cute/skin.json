@@ -1,0 +1,725 @@
+{
+  "name": "Cute crew",
+  "author": "Bot Beacons",
+  "description": "Seven friendly characters (Cloudy, Pip, Jelly, Luna, Spike, Bitsy and Mocha), handed out to your bots in turn. Calm idle animations.",
+  "credits": "Art AI-generated, cut into layers for Bot Beacons.",
+  "anim": {
+    "idleEvery": [18, 45],
+    "twitchEvery": [14, 40]
+  },
+  "looks": [
+    {
+      "look": "cloudy",
+      "name": "Cloudy",
+      "color": "#6EC6FF",
+      "tint": "#6EC6FF",
+      "base": "art/weather-halo.png",
+      "overlays": [
+        "art/weather-body.png",
+        "art/weather-drop.png"
+      ],
+      "eye": [78.9, 102.5],
+      "eyeR": 0,
+      "eyeGlow": 64,
+      "lamp": [117.6, 150.5],
+      "lampR": 0,
+      "lampGlow": 14,
+      "glowOver": 0,
+      "eyeCore": 0,
+      "anim": {
+        "idleEvery": [18, 45],
+        "twitchEvery": [14, 40],
+        "antenna": [117.6, 158.3],
+        "idle": [
+          {
+            "name": "sleepy-breathe",
+            "dur": 4.5,
+            "steps": [
+              {
+                "layer": "art/weather-body.png",
+                "scale": 0.035,
+                "pivot": [80.8, 159.8]
+              },
+              {
+                "layer": "art/weather-drop.png",
+                "scale": 0.035,
+                "pivot": [80.8, 159.8]
+              }
+            ]
+          },
+          {
+            "name": "drip",
+            "dur": 2.4,
+            "steps": [
+              {
+                "layer": "art/weather-drop.png",
+                "dy": 16,
+                "alpha": 0.0,
+                "pivot": [117.6, 138.1],
+                "at": 0.1,
+                "len": 0.9
+              },
+              {
+                "layer": "art/weather-body.png",
+                "scale": 0.012,
+                "pivot": [80.8, 159.8],
+                "len": 0.5
+              }
+            ]
+          },
+          {
+            "name": "doze-drift",
+            "dur": 4.0,
+            "steps": [
+              {
+                "tilt": 4,
+                "wave": 1
+              },
+              {
+                "layer": "art/weather-body.png",
+                "scale": 0.02,
+                "pivot": [80.8, 159.8]
+              },
+              {
+                "layer": "art/weather-drop.png",
+                "scale": 0.02,
+                "pivot": [80.8, 159.8]
+              }
+            ]
+          }
+        ],
+        "twitches": [
+          {
+            "name": "dream-sparkle",
+            "dur": 0.9,
+            "steps": [
+              {
+                "glint": [60.3, 91.7],
+                "size": 6
+              }
+            ]
+          },
+          {
+            "name": "drizzle",
+            "dur": 1.0,
+            "steps": [
+              {
+                "sparks": "antenna",
+                "n": 5,
+                "color": "#7CC8FF"
+              }
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "look": "pip",
+      "name": "Pip",
+      "color": "#FF8A3D",
+      "tint": "#FF8A3D",
+      "base": "art/fox-halo.png",
+      "overlays": [
+        "art/fox-body.png",
+        "art/fox-ear-l.png",
+        "art/fox-ear-r.png"
+      ],
+      "eye": [79.1, 86.2],
+      "eyeR": 0,
+      "eyeGlow": 60,
+      "lamp": [84.1, 140.6],
+      "lampR": 0,
+      "lampGlow": 8,
+      "glowOver": 0,
+      "eyeCore": 0,
+      "anim": {
+        "idleEvery": [18, 45],
+        "twitchEvery": [14, 40],
+        "idle": [
+          {
+            "name": "ear-twitch-left",
+            "dur": 0.9,
+            "steps": [
+              {
+                "layer": "art/fox-ear-l.png",
+                "rotate": -9,
+                "pivot": [47.0, 86.2],
+                "wave": 3
+              }
+            ]
+          },
+          {
+            "name": "ear-twitch-right",
+            "dur": 0.9,
+            "steps": [
+              {
+                "layer": "art/fox-ear-r.png",
+                "rotate": 9,
+                "pivot": [113.6, 87.7],
+                "wave": 3
+              }
+            ]
+          },
+          {
+            "name": "curious-tilt",
+            "dur": 2.2,
+            "steps": [
+              {
+                "tilt": 8,
+                "wave": 1
+              },
+              {
+                "layer": "art/fox-ear-r.png",
+                "rotate": 5,
+                "pivot": [113.6, 87.7],
+                "at": 0.3,
+                "len": 0.4
+              }
+            ]
+          },
+          {
+            "name": "perk-up",
+            "dur": 1.2,
+            "steps": [
+              {
+                "hop": 3
+              },
+              {
+                "layer": "art/fox-ear-l.png",
+                "dy": -4,
+                "rotate": -3,
+                "pivot": [47.0, 86.2]
+              },
+              {
+                "layer": "art/fox-ear-r.png",
+                "dy": -4,
+                "rotate": 3,
+                "pivot": [113.6, 87.7]
+              }
+            ]
+          }
+        ],
+        "twitches": [
+          {
+            "name": "eye-sparkle",
+            "dur": 0.8,
+            "steps": [
+              {
+                "glint": [61.4, 121.7],
+                "size": 5
+              },
+              {
+                "glint": [107.5, 121.0],
+                "size": 5,
+                "at": 0.15
+              }
+            ]
+          },
+          {
+            "name": "ear-flick",
+            "dur": 0.6,
+            "steps": [
+              {
+                "layer": "art/fox-ear-r.png",
+                "rotate": 7,
+                "pivot": [113.6, 87.7],
+                "wave": 2
+              }
+            ]
+          }
+        ],
+        "antenna": [79.1, 86.2]
+      }
+    },
+    {
+      "look": "jelly",
+      "name": "Jelly",
+      "color": "#A97CFF",
+      "tint": "#A97CFF",
+      "base": "art/focus-halo.png",
+      "overlays": [
+        "art/focus-tentacles.png",
+        "art/focus-bell.png"
+      ],
+      "eye": [78.9, 62.4],
+      "eyeR": 0,
+      "eyeGlow": 66,
+      "lamp": [78.9, 97.4],
+      "lampR": 0,
+      "lampGlow": 16,
+      "glowOver": 0,
+      "eyeCore": 0,
+      "anim": {
+        "idleEvery": [18, 45],
+        "twitchEvery": [14, 40],
+        "idle": [
+          {
+            "name": "swim",
+            "dur": 2.6,
+            "steps": [
+              {
+                "layer": "art/focus-bell.png",
+                "scale": 0.05,
+                "pivot": [78.9, 74.6],
+                "len": 0.5
+              },
+              {
+                "layer": "art/focus-tentacles.png",
+                "dy": -5,
+                "pivot": [78.9, 112.3],
+                "len": 0.5
+              },
+              {
+                "hop": 3,
+                "at": 0.15,
+                "len": 0.85
+              },
+              {
+                "glow": "lamp",
+                "r": 30,
+                "alpha": 130
+              }
+            ]
+          },
+          {
+            "name": "drift",
+            "dur": 4.5,
+            "steps": [
+              {
+                "tilt": 4,
+                "wave": 1
+              },
+              {
+                "layer": "art/focus-tentacles.png",
+                "rotate": 2,
+                "pivot": [78.9, 112.3],
+                "wave": 2
+              }
+            ]
+          },
+          {
+            "name": "glow-pulse",
+            "dur": 3.0,
+            "steps": [
+              {
+                "glow": "eye",
+                "r": 40,
+                "alpha": 170
+              },
+              {
+                "layer": "art/focus-bell.png",
+                "scale": 0.02,
+                "pivot": [78.9, 74.6]
+              }
+            ]
+          }
+        ],
+        "twitches": [
+          {
+            "name": "sparkle",
+            "dur": 0.9,
+            "steps": [
+              {
+                "glint": [98.3, 54.8],
+                "size": 6
+              }
+            ]
+          },
+          {
+            "name": "tingle",
+            "dur": 0.8,
+            "steps": [
+              {
+                "layer": "art/focus-tentacles.png",
+                "dy": -3,
+                "pivot": [78.9, 112.3]
+              }
+            ]
+          }
+        ],
+        "antenna": [78.9, 62.4]
+      }
+    },
+    {
+      "look": "luna",
+      "name": "Luna",
+      "color": "#F3E3A0",
+      "tint": "#F3E3A0",
+      "base": "art/moon-halo.png",
+      "overlays": [
+        "art/moon-body.png"
+      ],
+      "eye": [101.3, 84.5],
+      "eyeR": 0,
+      "eyeGlow": 62,
+      "lamp": [57.0, 123.5],
+      "lampR": 0,
+      "lampGlow": 10,
+      "glowOver": 0,
+      "eyeCore": 0,
+      "anim": {
+        "idleEvery": [18, 45],
+        "twitchEvery": [14, 40],
+        "idle": [
+          {
+            "name": "float",
+            "dur": 5.0,
+            "steps": [
+              {
+                "hop": 3
+              },
+              {
+                "tilt": 3,
+                "wave": 1
+              }
+            ]
+          },
+          {
+            "name": "glow-pulse",
+            "dur": 4.0,
+            "steps": [
+              {
+                "glow": "eye",
+                "r": 46,
+                "alpha": 150
+              },
+              {
+                "glow": "lamp",
+                "r": 18,
+                "alpha": 90,
+                "at": 0.2,
+                "len": 0.6
+              }
+            ]
+          },
+          {
+            "name": "twinkle",
+            "dur": 2.5,
+            "steps": [
+              {
+                "glint": [110.1, 66.8],
+                "size": 6,
+                "len": 0.4
+              },
+              {
+                "glint": [94.2, 96.9],
+                "size": 4,
+                "at": 0.3,
+                "len": 0.4
+              },
+              {
+                "glint": [120.8, 105.8],
+                "size": 5,
+                "at": 0.6,
+                "len": 0.4
+              }
+            ]
+          },
+          {
+            "name": "rock",
+            "dur": 3.5,
+            "steps": [
+              {
+                "layer": "art/moon-body.png",
+                "rotate": 5,
+                "pivot": [78.2, 102.2],
+                "wave": 1
+              }
+            ]
+          }
+        ],
+        "twitches": [
+          {
+            "name": "star",
+            "dur": 0.9,
+            "steps": [
+              {
+                "glint": [106.6, 81.0],
+                "size": 6,
+                "color": "#FFF6D0"
+              }
+            ]
+          }
+        ],
+        "antenna": [101.3, 84.5]
+      }
+    },
+    {
+      "look": "spike",
+      "name": "Spike",
+      "color": "#5BBF6A",
+      "tint": "#5BBF6A",
+      "base": "art/plant-halo.png",
+      "overlays": [
+        "art/plant-body.png",
+        "art/plant-flower.png"
+      ],
+      "eye": [60.8, 49.8],
+      "eyeR": 0,
+      "eyeGlow": 40,
+      "lamp": [79.4, 87.1],
+      "lampR": 0,
+      "lampGlow": 10,
+      "glowOver": 0,
+      "eyeCore": 0,
+      "anim": {
+        "idleEvery": [18, 45],
+        "twitchEvery": [14, 40],
+        "antenna": [60.8, 49.8],
+        "idle": [
+          {
+            "name": "sway",
+            "dur": 3.0,
+            "steps": [
+              {
+                "layer": "art/plant-body.png",
+                "rotate": 4,
+                "pivot": [79.9, 165.2],
+                "wave": 2
+              },
+              {
+                "layer": "art/plant-flower.png",
+                "rotate": 4,
+                "pivot": [79.9, 165.2],
+                "wave": 2
+              }
+            ]
+          },
+          {
+            "name": "bloom",
+            "dur": 1.8,
+            "steps": [
+              {
+                "layer": "art/plant-flower.png",
+                "scale": 0.18,
+                "pivot": [60.8, 49.8]
+              },
+              {
+                "glint": [60.8, 49.8],
+                "size": 7,
+                "at": 0.3,
+                "len": 0.5
+              }
+            ]
+          },
+          {
+            "name": "happy-hop",
+            "dur": 1.4,
+            "steps": [
+              {
+                "hop": 3,
+                "wave": 2
+              },
+              {
+                "layer": "art/plant-flower.png",
+                "scale": 0.1,
+                "rotate": 3,
+                "pivot": [60.8, 49.8],
+                "wave": 3
+              }
+            ]
+          }
+        ],
+        "twitches": [
+          {
+            "name": "flower-wiggle",
+            "dur": 0.8,
+            "steps": [
+              {
+                "layer": "art/plant-flower.png",
+                "scale": 0.08,
+                "rotate": 3,
+                "pivot": [60.8, 49.8],
+                "wave": 3
+              }
+            ]
+          },
+          {
+            "name": "sparkle",
+            "dur": 0.9,
+            "steps": [
+              {
+                "glint": [110.3, 66.3],
+                "size": 5
+              }
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "look": "bitsy",
+      "name": "Bitsy",
+      "color": "#3CCFC0",
+      "tint": "#3CCFC0",
+      "base": "art/pc-halo.png",
+      "overlays": [
+        "art/pc-body.png"
+      ],
+      "eye": [75.9, 91.1],
+      "eyeR": 0,
+      "eyeGlow": 58,
+      "lamp": [34.4, 144.6],
+      "lampR": 0,
+      "lampGlow": 12,
+      "glowOver": 0,
+      "eyeCore": 0,
+      "anim": {
+        "idleEvery": [18, 45],
+        "twitchEvery": [14, 40],
+        "antenna": [80.0, 36.7],
+        "idle": [
+          {
+            "name": "boot-bounce",
+            "dur": 1.3,
+            "steps": [
+              {
+                "hop": 3,
+                "wave": 2
+              },
+              {
+                "layer": "art/pc-body.png",
+                "scale": -0.04,
+                "pivot": [79.4, 166.2],
+                "wave": 2
+              }
+            ]
+          },
+          {
+            "name": "thinking",
+            "dur": 2.5,
+            "steps": [
+              {
+                "glow": "eye",
+                "r": 34,
+                "alpha": 150
+              },
+              {
+                "sparks": "antenna",
+                "n": 6,
+                "color": "#FFE27A",
+                "at": 0.45,
+                "len": 0.5
+              }
+            ]
+          },
+          {
+            "name": "nod",
+            "dur": 1.6,
+            "steps": [
+              {
+                "tilt": 5,
+                "wave": 2
+              }
+            ]
+          }
+        ],
+        "twitches": [
+          {
+            "name": "screen-flicker",
+            "dur": 0.6,
+            "steps": [
+              {
+                "glow": "eye",
+                "r": 30,
+                "alpha": 120
+              }
+            ]
+          },
+          {
+            "name": "led-blink",
+            "dur": 0.5,
+            "steps": [
+              {
+                "glow": "lamp",
+                "r": 7,
+                "alpha": 230,
+                "color": "#7CFF7C"
+              }
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "look": "mocha",
+      "name": "Mocha",
+      "color": "#C68B59",
+      "tint": "#C68B59",
+      "base": "art/coffee-halo.png",
+      "overlays": [
+        "art/coffee-body.png",
+        "art/coffee-steam.png"
+      ],
+      "eye": [64.4, 76.9],
+      "eyeR": 0,
+      "eyeGlow": 56,
+      "lamp": [64.4, 76.9],
+      "lampR": 0,
+      "lampGlow": 14,
+      "glowOver": 0,
+      "eyeCore": 0,
+      "anim": {
+        "idleEvery": [18, 45],
+        "twitchEvery": [14, 40],
+        "antenna": [64.4, 57.1],
+        "idle": [
+          {
+            "name": "steam-rise",
+            "dur": 4.0,
+            "steps": [
+              {
+                "layer": "art/coffee-steam.png",
+                "dy": -8,
+                "alpha": 0.2,
+                "scale": 0.08,
+                "pivot": [64.4, 63.1]
+              }
+            ]
+          },
+          {
+            "name": "steam-curl",
+            "dur": 4.0,
+            "steps": [
+              {
+                "layer": "art/coffee-steam.png",
+                "rotate": 6,
+                "dy": -4,
+                "pivot": [64.4, 63.1],
+                "wave": 2
+              }
+            ]
+          },
+          {
+            "name": "wobble",
+            "dur": 1.4,
+            "steps": [
+              {
+                "tilt": 5,
+                "wave": 3
+              },
+              {
+                "layer": "art/coffee-steam.png",
+                "rotate": -8,
+                "pivot": [64.4, 63.1],
+                "wave": 3
+              }
+            ]
+          }
+        ],
+        "twitches": [
+          {
+            "name": "latte-glint",
+            "dur": 0.8,
+            "steps": [
+              {
+                "glint": [30.8, 90.7],
+                "size": 5
+              }
+            ]
+          }
+        ]
+      }
+    }
+  ]
+}
